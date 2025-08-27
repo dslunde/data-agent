@@ -340,7 +340,8 @@ class PatternAnalyzer:
             "algorithm": "kmeans",
             "n_clusters": n_clusters,
             "features": features,
-            "cluster_labels": cluster_labels.tolist(),
+            "cluster_assignments": cluster_labels.tolist(),  # Use standard API key
+            "cluster_labels": cluster_labels.tolist(),  # Keep for backward compatibility
             "metrics": {
                 "silhouette_score": float(silhouette_avg),
                 "inertia": float(inertia),
@@ -386,7 +387,8 @@ class PatternAnalyzer:
             "algorithm": "dbscan",
             "parameters": {"eps": eps, "min_samples": min_samples},
             "features": features,
-            "cluster_labels": cluster_labels.tolist(),
+            "cluster_assignments": cluster_labels.tolist(),  # Use standard API key
+            "cluster_labels": cluster_labels.tolist(),  # Keep for backward compatibility
             "metrics": {
                 "n_clusters": n_clusters,
                 "n_noise": n_noise,

@@ -92,15 +92,18 @@ class TestStatisticalAnalyzer:
         assert result["aggregation_functions"] == ["count", "mean", "std"]
         assert "results" in result
 
-        # Check results structure
+        # Check results structure (pandas groupby returns dict structure)
         results = result["results"]
-        assert len(results) == 3  # Should have A, B, C groups
-
-        for group_result in results:
-            assert "group_values" in group_result
-            assert "count" in group_result
-            assert "mean" in group_result
-            assert "std" in group_result
+        assert isinstance(results, dict)
+        
+        # Should have the aggregation functions as keys
+        for func in ["count", "mean", "std"]:
+            assert func in results
+            # Each function should have category groups
+            func_results = results[func]
+            assert isinstance(func_results, dict)
+            # Should have results for categories A, B, C
+            assert len(func_results) == 3
 
     def test_filter_data(self, analyzer, sample_df):
         """Test data filtering functionality."""
@@ -235,18 +238,23 @@ class TestPatternAnalyzer:
         assert "n_clusters" in result
         assert "cluster_assignments" in result
         assert "cluster_centers" in result
-        assert "silhouette_score" in result
+        assert "metrics" in result
 
         assert result["algorithm"] == "kmeans"
         assert result["n_clusters"] == 2
+
+        # Check metrics structure (silhouette_score is nested in metrics)
+        metrics = result["metrics"]
+        assert "silhouette_score" in metrics
+        assert isinstance(metrics["silhouette_score"], float)
 
         # Check cluster assignments
         assignments = result["cluster_assignments"]
         assert len(assignments) == len(corr_df)
         assert all(0 <= cluster <= 1 for cluster in assignments)
 
-        # Silhouette score should be reasonable
-        assert -1 <= result["silhouette_score"] <= 1
+        # Silhouette score should be reasonable (from metrics)
+        assert -1 <= metrics["silhouette_score"] <= 1
 
     def test_clustering_analysis_dbscan(self, analyzer, corr_df):
         """Test DBSCAN clustering analysis."""

@@ -528,6 +528,42 @@ Set confidence between 0.1 and 1.0 based on how clear the intent is."""
 
         return matched
 
+    def _extract_column_references(self, query: str) -> List[str]:
+        """
+        Extract column references from query.
+        
+        This is the method that tests expect to exist.
+        """
+        return self._extract_columns_heuristic(query)
+
+    def _extract_filters(self, query: str) -> Dict[str, Any]:
+        """
+        Extract filters from query.
+        
+        This is the method that tests expect to exist.
+        Returns a dictionary format that tests expect.
+        """
+        filters_list = self._extract_filters_heuristic(query)
+        
+        # Convert to dictionary format expected by tests
+        filters_dict = {}
+        for filter_item in filters_list:
+            column = filter_item.get("column")
+            operator = filter_item.get("operator")
+            value = filter_item.get("value")
+            
+            if column:
+                if operator == "equals":
+                    filters_dict[column] = value
+                elif operator == "greater_than":
+                    filters_dict[column] = {"min": value}
+                elif operator == "less_than":
+                    filters_dict[column] = {"max": value}
+                elif operator == "contains":
+                    filters_dict[column] = {"contains": value}
+        
+        return filters_dict
+
 
 def create_query_processor(llm_manager) -> QueryProcessor:
     """Create and return query processor instance."""

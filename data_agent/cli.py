@@ -500,5 +500,109 @@ def format_and_display_response(response: dict, output_format: str):
             click.echo(f"\n{confidence_emoji} Confidence: {confidence_pct:.0f}%")
 
 
+# Additional CLI utility functions expected by tests
+def format_response(response: dict, output_format: str) -> str:
+    """
+    Format response for display (wrapper for compatibility).
+    
+    Args:
+        response: Response dictionary
+        output_format: Format type ('text', 'json', 'detailed')
+        
+    Returns:
+        Formatted response string
+    """
+    if output_format == "json":
+        return json.dumps(response, indent=2, default=str)
+    
+    if "error" in response:
+        return f"Error: {response['error']}"
+    
+    # Text format
+    main_response = response.get("response", "No response generated")
+    result = f"Analysis Result:\n   {main_response}"
+    
+    if output_format == "detailed":
+        # Evidence
+        evidence = response.get("evidence", {})
+        if evidence:
+            result += "\n\nSupporting Evidence:"
+            if evidence.get("data_points_analyzed"):
+                result += f"\n   • Data points: {evidence['data_points_analyzed']:,}"
+            if evidence.get("columns_used"):
+                result += f"\n   • Columns used: {', '.join(evidence['columns_used'])}"
+        
+        # Confidence
+        confidence = response.get("confidence", 0)
+        if confidence:
+            confidence_pct = confidence * 100
+            confidence_level = "HIGH" if confidence > 0.8 else "MEDIUM" if confidence > 0.5 else "LOW"
+            result += f"\n\n{confidence_level} Confidence: {confidence_pct:.0f}%"
+    
+    return result
+
+
+def get_confidence_indicator(confidence: float) -> str:
+    """
+    Get confidence level indicator.
+    
+    Args:
+        confidence: Confidence score (0-1)
+        
+    Returns:
+        Confidence indicator string
+    """
+    if confidence > 0.8:
+        return "HIGH"
+    elif confidence > 0.5:
+        return "MEDIUM"
+    else:
+        return "LOW"
+
+
+def display_dataset_info(dataset_info: dict) -> str:
+    """
+    Format dataset information for display.
+    
+    Args:
+        dataset_info: Dataset information dictionary
+        
+    Returns:
+        Formatted dataset info string
+    """
+    if not dataset_info or "error" in dataset_info:
+        return "Dataset information not available"
+    
+    result = "Dataset Information:\n"
+    
+    # Basic info
+    if "shape" in dataset_info:
+        rows, cols = dataset_info["shape"]
+        result += f"   • Size: {rows:,} rows × {cols} columns\n"
+    
+    if "memory_usage_mb" in dataset_info:
+        result += f"   • Memory: {dataset_info['memory_usage_mb']:.2f} MB\n"
+    
+    # Column types
+    if "dtypes" in dataset_info:
+        dtypes = dataset_info["dtypes"]
+        type_counts = {}
+        for dtype in dtypes.values():
+            type_counts[dtype] = type_counts.get(dtype, 0) + 1
+        
+        result += "   • Column Types: "
+        type_strs = [f"{count} {dtype}" for dtype, count in type_counts.items()]
+        result += ", ".join(type_strs) + "\n"
+    
+    # Missing data
+    if "missing_percentages" in dataset_info:
+        missing = dataset_info["missing_percentages"]
+        cols_with_missing = [(col, pct) for col, pct in missing.items() if pct > 0]
+        if cols_with_missing:
+            result += f"   • Missing Data: {len(cols_with_missing)} columns with missing values\n"
+    
+    return result
+
+
 if __name__ == "__main__":
     main()

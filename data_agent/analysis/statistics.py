@@ -94,7 +94,8 @@ class StatisticalAnalyzer:
             result = {
                 "group_by": group_by,
                 "agg_column": agg_column,
-                "functions": valid_agg_funcs,
+                "aggregation_functions": valid_agg_funcs,  # Use standard API key
+                "functions": valid_agg_funcs,  # Keep for backward compatibility
                 "results": (
                     grouped.to_dict()
                     if len(group_by) == 1
@@ -110,14 +111,16 @@ class StatisticalAnalyzer:
             return {"error": str(e)}
 
     def filter_data(
-        self, df: pd.DataFrame, filters: List[Dict[str, Any]]
+        self, df: pd.DataFrame, filters: Union[Dict[str, Any], List[Dict[str, Any]]]
     ) -> Dict[str, Any]:
         """
         Filter data based on specified conditions.
 
         Args:
             df: DataFrame to filter
-            filters: List of filter conditions
+            filters: Dictionary of column filters or list of filter conditions
+                    Dict format: {"column": value, "column2": {"min": x, "max": y}}
+                    List format: [{"column": "col", "operator": "equals", "value": x}]
 
         Returns:
             Filter results and statistics
@@ -125,6 +128,21 @@ class StatisticalAnalyzer:
         try:
             filtered_df = df.copy()
             applied_filters = []
+            
+            # Convert dictionary format to list format for processing
+            if isinstance(filters, dict):
+                filter_list = []
+                for column, condition in filters.items():
+                    if isinstance(condition, dict):
+                        # Handle range conditions like {"min": 90, "max": 110}
+                        if "min" in condition:
+                            filter_list.append({"column": column, "operator": "greater_equal", "value": condition["min"]})
+                        if "max" in condition:
+                            filter_list.append({"column": column, "operator": "less_equal", "value": condition["max"]})
+                    else:
+                        # Handle direct equality
+                        filter_list.append({"column": column, "operator": "equals", "value": condition})
+                filters = filter_list
 
             for filter_spec in filters:
                 column = filter_spec.get("column")
@@ -173,7 +191,8 @@ class StatisticalAnalyzer:
                 "original_count": len(df),
                 "filtered_count": len(filtered_df),
                 "reduction_percentage": ((len(df) - len(filtered_df)) / len(df)) * 100,
-                "applied_filters": applied_filters,
+                "filters_applied": applied_filters,  # Use standard API key
+                "applied_filters": applied_filters,  # Keep for backward compatibility
                 "sample_data": (
                     filtered_df.head(10).to_dict("records")
                     if len(filtered_df) > 0
