@@ -2,6 +2,8 @@
 
 This document showcases the Data Agent's capabilities with impressive example queries designed for the natural gas pipeline transportation dataset.
 
+**✅ All advanced features have been fixed and are now fully functional (August 27, 2025)**
+
 ## Dataset Context
 - **23.8M records** of natural gas pipeline transportation data
 - **169 pipeline companies** across **48 states**

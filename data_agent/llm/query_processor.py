@@ -55,6 +55,11 @@ class AnalysisMethod(Enum):
     GROUP_COMPARISON = "group_comparison"
     SEGMENT_ANALYSIS = "segment_analysis"
 
+    # Causal methods
+    CAUSAL_DRIVERS = "causal_drivers"
+    BOTTLENECK_ANALYSIS = "bottleneck_analysis"
+    SEASONAL_PATTERNS = "seasonal_patterns"
+
 
 @dataclass
 class QueryIntent:
@@ -198,9 +203,24 @@ class QueryProcessor:
             ],
             "causal": [
                 (
+                    r"\b(capacity|utilization|driver\w*|drive\w*|influence\w*)\b.*\b(factor\w*|cause\w*|reason\w*|why)\b",
+                    QueryType.CAUSAL,
+                    AnalysisMethod.CAUSAL_DRIVERS,
+                ),
+                (
+                    r"\b(bottleneck\w*|constraint\w*|limitation\w*|choke\s*point\w*)\b",
+                    QueryType.CAUSAL,
+                    AnalysisMethod.BOTTLENECK_ANALYSIS,
+                ),
+                (
+                    r"\b(seasonal\w*|season\w*|monthly|quarterly|cyclic\w*|periodic)\b.*\b(pattern\w*|trend\w*|variation\w*)\b",
+                    QueryType.CAUSAL,
+                    AnalysisMethod.SEASONAL_PATTERNS,
+                ),
+                (
                     r"\b(cause\w*|reason\w*|why|explain\w*|impact|effect)\b",
                     QueryType.CAUSAL,
-                    AnalysisMethod.PATTERN_RECOGNITION,
+                    AnalysisMethod.CAUSAL_DRIVERS,
                 ),
             ],
         }
@@ -311,6 +331,9 @@ Available analysis methods:
 - time_series_patterns: Find temporal patterns
 - group_comparison: Compare different groups
 - pattern_recognition: Find general patterns
+- causal_drivers: Analyze what drives capacity utilization or key metrics
+- bottleneck_analysis: Identify infrastructure or process bottlenecks
+- seasonal_patterns: Analyze seasonal and cyclic patterns in data
 
 Respond with a JSON object in this exact format:
 {

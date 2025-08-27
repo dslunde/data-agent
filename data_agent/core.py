@@ -109,6 +109,9 @@ class DataAgentCore:
                 dataset_path, sample_size=sample_size, optimize_dtypes=True
             )
 
+            # Apply dataset optimizations
+            self.dataset = self.dataset_optimizer.optimize_dataset_loading(self.dataset)
+
             # Update schema information for query processor
             self.query_processor.update_schema_info(self.dataset)
 
@@ -146,6 +149,9 @@ class DataAgentCore:
             self.dataset = self.loader.load_dataset(
                 file_path, sample_size=sample_size, optimize_dtypes=True
             )
+
+            # Apply dataset optimizations
+            self.dataset = self.dataset_optimizer.optimize_dataset_loading(self.dataset)
 
             # Update schema information for query processor
             self.query_processor.update_schema_info(self.dataset)
@@ -328,6 +334,16 @@ class DataAgentCore:
 
             elif method == AnalysisMethod.DATA_QUALITY_CHECK:
                 result = self.quality_assessor.assess_quality(self.dataset)
+
+            # Causal analysis methods
+            elif method == AnalysisMethod.CAUSAL_DRIVERS:
+                result = self.causal_analyzer.analyze_pipeline_capacity_drivers(self.dataset)
+
+            elif method == AnalysisMethod.BOTTLENECK_ANALYSIS:
+                result = self.causal_analyzer.detect_infrastructure_bottlenecks(self.dataset)
+
+            elif method == AnalysisMethod.SEASONAL_PATTERNS:
+                result = self.causal_analyzer.analyze_seasonal_patterns(self.dataset)
 
             else:
                 # Fallback to basic description

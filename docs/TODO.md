@@ -135,6 +135,7 @@
   - [x] Add confounding variable detection specific to dataset domain
   - [x] Create hypothesis testing with proper statistical methods (ANOVA, Mann-Whitney U)
   - [x] Implement robustness checks and sensitivity analysis
+  - [x] **FIXED**: Integrated causal analysis engine into core application execution flow
 - [x] **Advanced Pattern Recognition**
   - [x] Implement market basket analysis (if applicable to dataset)
   - [x] Add seasonal decomposition for time series (if temporal data exists)
@@ -172,6 +173,7 @@
   - [x] Optimize column access patterns for most common queries
   - [x] Implement smart indexing for key columns
   - [x] Cache correlation matrices and clustering results
+  - [x] **FIXED**: Integrated DatasetOptimizer into core data loading workflows
 
 ### 7.2 General Speed Optimization - COMPLETED ✅
 - [x] **Algorithm Optimization**
@@ -463,3 +465,19 @@ python -m data_agent --provider anthropic --verbose
 - **Phase 10**: Final polish and deployment preparation
 
 **The core Data Agent application is fully functional and ready for deployment!**
+
+## Recent Critical Fixes (August 27, 2025)
+
+### Integration Issues Resolved ✅
+- **FIXED**: Causal Analysis Engine was present but not integrated into core execution
+  - Added new AnalysisMethod enums for causal analysis (CAUSAL_DRIVERS, BOTTLENECK_ANALYSIS, SEASONAL_PATTERNS)
+  - Updated QueryProcessor patterns to recognize causal queries properly
+  - Added execution paths in DataAgentCore._execute_analysis()
+  - Fixed misleading query classification that routed causal queries to pattern recognition
+
+- **FIXED**: DatasetOptimizer was instantiated but never used
+  - Integrated optimizer into both download_and_load_dataset() and load_local_dataset() workflows
+  - Now applies dataset-specific optimizations automatically during data loading
+
+### Result
+All advertised advanced features (causal analysis, bottleneck detection, seasonal patterns) are now fully functional and integrated into the application execution flow.
