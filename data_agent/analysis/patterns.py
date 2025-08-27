@@ -11,6 +11,8 @@ from sklearn.cluster import KMeans, DBSCAN
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import silhouette_score
 
+from ..constants import ResponseKeys
+
 logger = logging.getLogger(__name__)
 
 
@@ -114,6 +116,8 @@ class PatternAnalyzer:
         features: Optional[List[str]] = None,
         n_clusters: Optional[int] = None,
         algorithm: str = "kmeans",
+        eps: float = 0.5,
+        min_samples: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Perform clustering analysis.
@@ -150,7 +154,7 @@ class PatternAnalyzer:
             if algorithm == "kmeans":
                 return self._kmeans_clustering(data, scaled_data, features, n_clusters)
             elif algorithm == "dbscan":
-                return self._dbscan_clustering(data, scaled_data, features)
+                return self._dbscan_clustering(data, scaled_data, features, eps, min_samples)
             else:
                 return {"error": f"Unknown clustering algorithm: {algorithm}"}
 
@@ -340,8 +344,8 @@ class PatternAnalyzer:
             "algorithm": "kmeans",
             "n_clusters": n_clusters,
             "features": features,
-            "cluster_assignments": cluster_labels.tolist(),  # Use standard API key
-            "cluster_labels": cluster_labels.tolist(),  # Keep for backward compatibility
+            ResponseKeys.CLUSTER_ASSIGNMENTS: cluster_labels.tolist(),  # Use standard API key
+            ResponseKeys.CLUSTER_LABELS: cluster_labels.tolist(),  # Keep for backward compatibility
             "metrics": {
                 "silhouette_score": float(silhouette_avg),
                 "inertia": float(inertia),
@@ -353,13 +357,14 @@ class PatternAnalyzer:
         return result
 
     def _dbscan_clustering(
-        self, data: pd.DataFrame, scaled_data: np.ndarray, features: List[str]
+        self, data: pd.DataFrame, scaled_data: np.ndarray, features: List[str],
+        eps: float = 0.5, min_samples: Optional[int] = None
     ) -> Dict[str, Any]:
         """Perform DBSCAN clustering."""
 
-        # Use default parameters that work well for most datasets
-        eps = 0.5
-        min_samples = max(2, len(features))
+        # Use provided parameters or sensible defaults
+        if min_samples is None:
+            min_samples = max(2, len(features))
 
         dbscan = DBSCAN(eps=eps, min_samples=min_samples)
         cluster_labels = dbscan.fit_predict(scaled_data)
@@ -388,8 +393,8 @@ class PatternAnalyzer:
             "parameters": {"eps": eps, "min_samples": min_samples},
             "features": features,
             "n_clusters": n_clusters,  # Add at top level for consistency
-            "cluster_assignments": cluster_labels.tolist(),  # Use standard API key
-            "cluster_labels": cluster_labels.tolist(),  # Keep for backward compatibility
+            ResponseKeys.CLUSTER_ASSIGNMENTS: cluster_labels.tolist(),  # Use standard API key
+            ResponseKeys.CLUSTER_LABELS: cluster_labels.tolist(),  # Keep for backward compatibility
             "metrics": {
                 "n_clusters": n_clusters,
                 "n_noise": n_noise,

@@ -11,6 +11,8 @@ from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 from sklearn.covariance import EllipticEnvelope
 
+from ..constants import ResponseKeys
+
 logger = logging.getLogger(__name__)
 
 
@@ -95,7 +97,7 @@ class AnomalyDetector:
             results["outlier_summary"] = {
                 "total_outliers": len(all_outliers),
                 "outlier_percentage": (len(all_outliers) / len(df)) * 100,
-                "outlier_indices": sorted(list(all_outliers)),
+                ResponseKeys.OUTLIER_INDICES: sorted(list(all_outliers)),
                 "consensus_outliers": self._find_consensus_outliers(
                     method_results, min_methods=2
                 ),
@@ -325,7 +327,7 @@ class AnomalyDetector:
                     "outlier_count": len(col_outliers),
                     "lower_bound": float(lower_bound),
                     "upper_bound": float(upper_bound),
-                    "outlier_indices": col_outliers,
+                    ResponseKeys.OUTLIER_INDICES: col_outliers,
                 }
 
         return {

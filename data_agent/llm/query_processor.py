@@ -350,24 +350,35 @@ For filters, extract any conditions mentioned in the query.
 Set confidence between 0.1 and 1.0 based on how clear the intent is."""
 
     def _parse_intent_response(self, content: str) -> Optional[Dict[str, Any]]:
-        """Parse JSON response from LLM."""
+        """Parse JSON response from LLM with robust error handling."""
         try:
-            # Extract JSON from content (handle markdown code blocks)
+            # Multiple strategies to extract JSON from content
+            json_str = None
+            
+            # Strategy 1: Handle markdown code blocks
             json_match = re.search(
                 r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL
             )
             if json_match:
                 json_str = json_match.group(1)
             else:
-                # Try to find JSON object directly
-                json_match = re.search(r"\{.*\}", content, re.DOTALL)
-                if json_match:
-                    json_str = json_match.group(0)
-                else:
-                    return None
+                # Strategy 2: Find JSON object by looking for balanced braces
+                json_str = self._extract_balanced_json(content)
+                
+                # Strategy 3: Fallback to simple regex if balanced approach fails
+                if not json_str:
+                    json_match = re.search(r"\{.*\}", content, re.DOTALL)
+                    if json_match:
+                        json_str = json_match.group(0)
 
-            # Parse JSON
-            intent_data = json.loads(json_str)
+            if not json_str:
+                return None
+
+            # Parse JSON with multiple attempts
+            intent_data = self._safe_json_parse(json_str)
+            
+            if not intent_data:
+                return None
 
             # Validate required fields
             required_fields = ["query_type", "analysis_method", "columns", "confidence"]
@@ -550,6 +561,85 @@ Set confidence between 0.1 and 1.0 based on how clear the intent is."""
                 matched.append(best_match)
 
         return matched
+
+    def _extract_balanced_json(self, content: str) -> Optional[str]:
+        """Extract JSON object by finding balanced braces."""
+        try:
+            # Find the first opening brace
+            start = content.find('{')
+            if start == -1:
+                return None
+            
+            # Count braces to find the matching closing brace
+            brace_count = 0
+            for i, char in enumerate(content[start:], start):
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        # Found the matching closing brace
+                        return content[start:i+1]
+            
+            return None
+        except Exception:
+            return None
+
+    def _safe_json_parse(self, json_str: str) -> Optional[Dict[str, Any]]:
+        """Parse JSON string with multiple fallback strategies."""
+        # Strategy 1: Direct parsing
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            pass
+        
+        # Strategy 2: Clean up common formatting issues
+        try:
+            # Remove common formatting issues
+            cleaned = json_str.strip()
+            # Remove trailing commas before closing braces/brackets
+            cleaned = re.sub(r',(\s*[}\]])', r'\1', cleaned)
+            # Fix unquoted keys (common LLM mistake)
+            cleaned = re.sub(r'(\w+):', r'"\1":', cleaned)
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+        
+        # Strategy 3: Extract key-value pairs manually if JSON is malformed
+        try:
+            result = {}
+            
+            # Extract common fields with regex
+            patterns = {
+                'query_type': r'"?query_type"?\s*:\s*"?([^",}]+)"?',
+                'analysis_method': r'"?analysis_method"?\s*:\s*"?([^",}]+)"?',
+                'confidence': r'"?confidence"?\s*:\s*([0-9.]+)',
+                'columns': r'"?columns"?\s*:\s*\[([^\]]*)\]',
+            }
+            
+            for field, pattern in patterns.items():
+                match = re.search(pattern, json_str, re.IGNORECASE)
+                if match:
+                    if field == 'confidence':
+                        result[field] = float(match.group(1))
+                    elif field == 'columns':
+                        # Parse column list
+                        columns_str = match.group(1)
+                        columns = [col.strip(' "\'') for col in columns_str.split(',') if col.strip()]
+                        result[field] = columns
+                    else:
+                        result[field] = match.group(1).strip(' "\'')
+            
+            # Set defaults for missing fields
+            if 'columns' not in result:
+                result['columns'] = []
+            if 'confidence' not in result:
+                result['confidence'] = 0.5
+            
+            return result if len(result) >= 2 else None
+            
+        except Exception:
+            return None
 
     def _extract_column_references(self, query: str) -> List[str]:
         """

@@ -3,6 +3,8 @@ Core application integration that ties all components together.
 """
 
 import logging
+import hashlib
+import json
 from typing import Optional, Dict, Any
 
 from .data.downloader import get_default_downloader
@@ -273,6 +275,8 @@ class DataAgentCore:
                     self.dataset,
                     features=intent.columns,
                     algorithm=intent.parameters.get("algorithm", "kmeans"),
+                    eps=intent.parameters.get("eps", 0.5),
+                    min_samples=intent.parameters.get("min_samples", None),
                 )
 
             elif method == AnalysisMethod.PATTERN_RECOGNITION:
@@ -280,12 +284,16 @@ class DataAgentCore:
 
             elif method == AnalysisMethod.OUTLIER_DETECTION:
                 result = self.anomaly_detector.detect_outliers(
-                    self.dataset, columns=intent.columns or None
+                    self.dataset, 
+                    columns=intent.columns or None,
+                    contamination=intent.parameters.get("contamination", 0.1)
                 )
 
             elif method == AnalysisMethod.ANOMALY_DETECTION:
                 result = self.anomaly_detector.detect_multivariate_anomalies(
-                    self.dataset, features=intent.columns or None
+                    self.dataset, 
+                    features=intent.columns or None,
+                    contamination=intent.parameters.get("contamination", 0.1)
                 )
 
             elif method == AnalysisMethod.TREND_ANALYSIS:
@@ -362,15 +370,37 @@ class DataAgentCore:
 
     def _generate_cache_key(self, intent) -> str:
         """Generate cache key for analysis result."""
+        # Create a hash of filters to avoid cache invalidation on minor filtering
+        filters_hash = self._hash_filters(intent.filters)
+        
         key_data = {
             "method": intent.analysis_method.value,
             "columns": sorted(intent.columns),
-            "filters": intent.filters,
+            "filters_hash": filters_hash,
             "parameters": intent.parameters,
-            "dataset_shape": self.dataset.shape if self.dataset is not None else None,
+            # Use dataset columns and dtypes instead of shape for better caching
+            "dataset_schema": list(self.dataset.columns) + [str(dtype) for dtype in self.dataset.dtypes] if self.dataset is not None else None,
         }
 
         return self.cache.get_cache_key(key_data) if self.cache else ""
+
+    def _hash_filters(self, filters) -> str:
+        """Create a hash of filters for consistent caching."""
+        if not filters:
+            return "no_filters"
+        
+        try:
+            # Sort filters for consistent hashing
+            if isinstance(filters, list):
+                sorted_filters = sorted(filters, key=lambda x: str(x))
+            else:
+                sorted_filters = sorted(filters.items()) if isinstance(filters, dict) else filters
+            
+            filters_str = json.dumps(sorted_filters, sort_keys=True)
+            return hashlib.md5(filters_str.encode()).hexdigest()[:8]
+        except (TypeError, ValueError):
+            # Fallback for unhashable types
+            return str(hash(str(filters)))[:8]
 
     def get_dataset_info(self) -> Dict[str, Any]:
         """Get current dataset information."""
