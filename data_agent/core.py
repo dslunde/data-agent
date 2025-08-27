@@ -12,6 +12,8 @@ from .data.profiler import get_default_profiler, get_default_cache
 from .analysis.statistics import get_default_statistical_analyzer
 from .analysis.patterns import get_default_pattern_analyzer
 from .analysis.anomalies import get_default_anomaly_detector
+from .analysis.optimizations import get_dataset_optimizer
+from .analysis.causal import get_causal_analyzer
 from .llm.clients import create_llm_manager
 from .llm.query_processor import create_query_processor, AnalysisMethod
 from .llm.response_generator import create_response_generator
@@ -70,6 +72,10 @@ class DataAgentCore:
         self.statistical_analyzer = get_default_statistical_analyzer()
         self.pattern_analyzer = get_default_pattern_analyzer()
         self.anomaly_detector = get_default_anomaly_detector()
+
+        # Advanced analytics components
+        self.dataset_optimizer = get_dataset_optimizer()
+        self.causal_analyzer = get_causal_analyzer()
 
         # LLM components
         self.llm_manager = create_llm_manager(preferred_provider)

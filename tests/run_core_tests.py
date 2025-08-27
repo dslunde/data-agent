@@ -6,7 +6,7 @@ This script runs essential tests to validate that all components work correctly.
 
 import pytest
 import sys
-from pathlib import Path
+
 
 def main():
     """Run core tests and report results."""
@@ -21,18 +21,18 @@ def main():
         "tests/test_analysis_engine.py::TestAnomalyDetector::test_detect_outliers_iqr",
         "tests/test_llm_integration.py::TestLLMManager::test_llm_manager_no_keys",
         "tests/test_llm_integration.py::TestQueryProcessor::test_pattern_classification_descriptive",
-        "tests/test_integration.py::TestDatasetIntegration::test_dataset_loading_integration"
+        "tests/test_integration.py::TestDatasetIntegration::test_dataset_loading_integration",
     ]
-    
+
     print("Running core functionality tests...")
     print("=" * 60)
-    
+
     # Run tests
     args = ["-v", "--tb=short"] + test_files
-    
+
     try:
         result = pytest.main(args)
-        
+
         if result == 0:
             print("\n" + "=" * 60)
             print("✓ All core tests PASSED!")
@@ -43,10 +43,11 @@ def main():
             print("✗ Some tests FAILED!")
             print("Please check the test output above for details.")
             return False
-            
+
     except Exception as e:
         print(f"\n✗ Error running tests: {e}")
         return False
+
 
 if __name__ == "__main__":
     success = main()

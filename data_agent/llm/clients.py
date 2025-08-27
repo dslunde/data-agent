@@ -278,21 +278,21 @@ class LLMManager:
         """Check if API key is valid (not a placeholder)."""
         if not key or not key.strip():
             return False
-            
+
         # Common placeholder patterns
         placeholders = [
             "your_openai_key_here",
-            "your_anthropic_key_here", 
+            "your_anthropic_key_here",
             "sk-placeholder",
             "your_api_key_here",
             "replace_with_your_key",
-            "your_key_here"
+            "your_key_here",
         ]
-        
+
         key_lower = key.lower()
         if any(placeholder in key_lower for placeholder in placeholders):
             return False
-            
+
         # Provider-specific validation
         if provider == "openai":
             # OpenAI keys should start with sk- and be reasonable length
@@ -300,16 +300,18 @@ class LLMManager:
         elif provider == "anthropic":
             # Anthropic keys should start with sk-ant- and be reasonable length
             return key.startswith("sk-ant-") and len(key) > 30
-            
+
         return True
 
     def _initialize_clients(self):
         """Initialize available LLM clients."""
         # Try to initialize OpenAI
         openai_key = os.getenv("OPENAI_API_KEY")
-        if (openai_key and 
-            self._is_valid_api_key(openai_key, "openai") and 
-            OPENAI_AVAILABLE):
+        if (
+            openai_key
+            and self._is_valid_api_key(openai_key, "openai")
+            and OPENAI_AVAILABLE
+        ):
             try:
                 client = OpenAIClient(openai_key)
                 # Only add to clients if initialization was successful
@@ -321,15 +323,19 @@ class LLMManager:
             if not openai_key or not openai_key.strip():
                 logger.debug("OpenAI API key not found or empty")
             elif not self._is_valid_api_key(openai_key, "openai"):
-                logger.debug("OpenAI API key appears to be a placeholder or invalid format")
+                logger.debug(
+                    "OpenAI API key appears to be a placeholder or invalid format"
+                )
             elif not OPENAI_AVAILABLE:
                 logger.debug("OpenAI package not available")
 
         # Try to initialize Anthropic
         anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-        if (anthropic_key and 
-            self._is_valid_api_key(anthropic_key, "anthropic") and 
-            ANTHROPIC_AVAILABLE):
+        if (
+            anthropic_key
+            and self._is_valid_api_key(anthropic_key, "anthropic")
+            and ANTHROPIC_AVAILABLE
+        ):
             try:
                 client = AnthropicClient(anthropic_key)
                 # Only add to clients if initialization was successful
@@ -341,7 +347,9 @@ class LLMManager:
             if not anthropic_key or not anthropic_key.strip():
                 logger.debug("Anthropic API key not found or empty")
             elif not self._is_valid_api_key(anthropic_key, "anthropic"):
-                logger.debug("Anthropic API key appears to be a placeholder or invalid format")
+                logger.debug(
+                    "Anthropic API key appears to be a placeholder or invalid format"
+                )
             elif not ANTHROPIC_AVAILABLE:
                 logger.debug("Anthropic package not available")
 
@@ -350,12 +358,12 @@ class LLMManager:
         if self.preferred_provider == "auto":
             # Auto-select from available clients
             available_clients = list(self.clients.keys())
-            
+
             if not available_clients:
                 logger.error("No LLM clients available! Please check your API keys.")
                 self.current_client = None
                 return
-                
+
             # Prefer Anthropic if available, then OpenAI (Anthropic generally has better reasoning)
             if "anthropic" in available_clients:
                 self.current_client = self.clients["anthropic"]

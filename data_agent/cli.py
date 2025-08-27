@@ -5,6 +5,7 @@ Command-line interface for the Data Agent.
 # Load environment variables from .env file if it exists
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass  # python-dotenv not available, skip
@@ -180,9 +181,7 @@ async def run_data_agent(
     available_providers = [p for p, info in connectivity.items() if info["available"]]
 
     if not available_providers:
-        click.echo(
-            "No LLM providers available. Please check your API keys:", err=True
-        )
+        click.echo("No LLM providers available. Please check your API keys:", err=True)
         for provider_name, info in connectivity.items():
             click.echo(f"  - {provider_name}: {info['error']}", err=True)
         click.echo("\nSet environment variables:")
