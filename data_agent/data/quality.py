@@ -49,7 +49,12 @@ class DataQualityAssessor:
             assessment["uniqueness"]["uniqueness_score"], 
             assessment["accuracy"]["accuracy_score"]
         ]
-        assessment["overall_score"] = round(sum(scores) / len(scores), 2)
+        base_score = sum(scores) / len(scores)
+        
+        # Apply penalty for issues
+        issue_penalty = len(assessment["issues"]) * 2  # 2 points per issue
+        final_score = max(0, base_score - issue_penalty)
+        assessment["overall_score"] = round(final_score, 2)
         
         # Add column-level quality information
         assessment["column_quality"] = self._assess_column_quality(df)
@@ -366,6 +371,19 @@ class DataQualityAssessor:
                     "column": col,
                     "description": f"Column '{col}' is {missing_pct[col]:.1f}% missing",
                     "impact": "May not be useful for analysis",
+                }
+            )
+
+        # 1b. Columns with high missing values (5-90%)
+        high_missing = missing_pct[(missing_pct >= 5) & (missing_pct <= 90)]
+        for col in high_missing.index:
+            issues.append(
+                {
+                    "severity": "high",
+                    "type": "high_missing_values",
+                    "column": col,
+                    "description": f"Column '{col}' has {missing_pct[col]:.1f}% missing values",
+                    "impact": "May affect analysis quality",
                 }
             )
 
