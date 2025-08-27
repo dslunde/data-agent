@@ -87,15 +87,17 @@ class OpenAIClient(LLMClient):
                 "OpenAI package not available. Install with: pip install openai"
             )
 
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        if not self.api_key:
+        # Get API key but don't store it - let OpenAI client handle it
+        resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
+        if not resolved_api_key or not resolved_api_key.strip():
             raise ValueError(
-                "OpenAI API key not provided. Set OPENAI_API_KEY environment variable."
+                "OpenAI API key not provided or empty. Set OPENAI_API_KEY environment variable."
             )
 
-        super().__init__(api_key, model)
+        super().__init__(None, model)  # Don't store API key in parent
 
-        self.client = OpenAI(api_key=self.api_key)
+        # Let OpenAI client manage the API key internally
+        self.client = OpenAI(api_key=resolved_api_key)
         self.rate_limit_delay = 0.1  # OpenAI allows higher rates
 
         logger.info(f"Initialized OpenAI client with model: {self.model}")
@@ -167,15 +169,17 @@ class AnthropicClient(LLMClient):
                 "Anthropic package not available. Install with: pip install anthropic"
             )
 
-        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
-        if not self.api_key:
+        # Get API key but don't store it - let Anthropic client handle it
+        resolved_api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+        if not resolved_api_key or not resolved_api_key.strip():
             raise ValueError(
-                "Anthropic API key not provided. Set ANTHROPIC_API_KEY environment variable."
+                "Anthropic API key not provided or empty. Set ANTHROPIC_API_KEY environment variable."
             )
 
-        super().__init__(api_key, model)
+        super().__init__(None, model)  # Don't store API key in parent
 
-        self.client = Anthropic(api_key=self.api_key)
+        # Let Anthropic client manage the API key internally
+        self.client = Anthropic(api_key=resolved_api_key)
         self.rate_limit_delay = 0.2  # Anthropic rate limits
 
         logger.info(f"Initialized Anthropic client with model: {self.model}")
@@ -270,46 +274,113 @@ class LLMManager:
             f"LLM Manager initialized with provider: {self.current_client.__class__.__name__ if self.current_client else 'None'}"
         )
 
+    def _is_valid_api_key(self, key: str, provider: str) -> bool:
+        """Check if API key is valid (not a placeholder)."""
+        if not key or not key.strip():
+            return False
+            
+        # Common placeholder patterns
+        placeholders = [
+            "your_openai_key_here",
+            "your_anthropic_key_here", 
+            "sk-placeholder",
+            "your_api_key_here",
+            "replace_with_your_key",
+            "your_key_here"
+        ]
+        
+        key_lower = key.lower()
+        if any(placeholder in key_lower for placeholder in placeholders):
+            return False
+            
+        # Provider-specific validation
+        if provider == "openai":
+            # OpenAI keys should start with sk- and be reasonable length
+            return key.startswith("sk-") and len(key) > 20
+        elif provider == "anthropic":
+            # Anthropic keys should start with sk-ant- and be reasonable length
+            return key.startswith("sk-ant-") and len(key) > 30
+            
+        return True
+
     def _initialize_clients(self):
         """Initialize available LLM clients."""
         # Try to initialize OpenAI
-        try:
-            openai_key = os.getenv("OPENAI_API_KEY")
-            if openai_key and OPENAI_AVAILABLE:
-                self.clients["openai"] = OpenAIClient(openai_key)
+        openai_key = os.getenv("OPENAI_API_KEY")
+        if (openai_key and 
+            self._is_valid_api_key(openai_key, "openai") and 
+            OPENAI_AVAILABLE):
+            try:
+                client = OpenAIClient(openai_key)
+                # Only add to clients if initialization was successful
+                self.clients["openai"] = client
                 logger.info("OpenAI client initialized successfully")
-        except Exception as e:
-            logger.warning(f"Could not initialize OpenAI client: {e}")
+            except Exception as e:
+                logger.warning(f"Could not initialize OpenAI client: {e}")
+        else:
+            if not openai_key or not openai_key.strip():
+                logger.debug("OpenAI API key not found or empty")
+            elif not self._is_valid_api_key(openai_key, "openai"):
+                logger.debug("OpenAI API key appears to be a placeholder or invalid format")
+            elif not OPENAI_AVAILABLE:
+                logger.debug("OpenAI package not available")
 
         # Try to initialize Anthropic
-        try:
-            anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-            if anthropic_key and ANTHROPIC_AVAILABLE:
-                self.clients["anthropic"] = AnthropicClient(anthropic_key)
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        if (anthropic_key and 
+            self._is_valid_api_key(anthropic_key, "anthropic") and 
+            ANTHROPIC_AVAILABLE):
+            try:
+                client = AnthropicClient(anthropic_key)
+                # Only add to clients if initialization was successful
+                self.clients["anthropic"] = client
                 logger.info("Anthropic client initialized successfully")
-        except Exception as e:
-            logger.warning(f"Could not initialize Anthropic client: {e}")
+            except Exception as e:
+                logger.warning(f"Could not initialize Anthropic client: {e}")
+        else:
+            if not anthropic_key or not anthropic_key.strip():
+                logger.debug("Anthropic API key not found or empty")
+            elif not self._is_valid_api_key(anthropic_key, "anthropic"):
+                logger.debug("Anthropic API key appears to be a placeholder or invalid format")
+            elif not ANTHROPIC_AVAILABLE:
+                logger.debug("Anthropic package not available")
 
     def _set_current_client(self):
         """Set the current client based on preference."""
         if self.preferred_provider == "auto":
-            # Auto-select first available client
-            if "openai" in self.clients:
-                self.current_client = self.clients["openai"]
-                self.preferred_provider = "openai"
-            elif "anthropic" in self.clients:
+            # Auto-select from available clients
+            available_clients = list(self.clients.keys())
+            
+            if not available_clients:
+                logger.error("No LLM clients available! Please check your API keys.")
+                self.current_client = None
+                return
+                
+            # Prefer Anthropic if available, then OpenAI (Anthropic generally has better reasoning)
+            if "anthropic" in available_clients:
                 self.current_client = self.clients["anthropic"]
                 self.preferred_provider = "anthropic"
+                logger.info("Auto-selected Anthropic as LLM provider")
+            elif "openai" in available_clients:
+                self.current_client = self.clients["openai"]
+                self.preferred_provider = "openai"
+                logger.info("Auto-selected OpenAI as LLM provider")
             else:
-                logger.error("No LLM clients available!")
-                self.current_client = None
+                # Use first available client
+                provider = available_clients[0]
+                self.current_client = self.clients[provider]
+                self.preferred_provider = provider
+                logger.info(f"Auto-selected {provider} as LLM provider")
         else:
             # Use preferred provider
             if self.preferred_provider in self.clients:
                 self.current_client = self.clients[self.preferred_provider]
+                logger.info(f"Using preferred provider: {self.preferred_provider}")
             else:
+                available = list(self.clients.keys())
                 logger.error(
-                    f"Preferred provider {self.preferred_provider} not available"
+                    f"Preferred provider '{self.preferred_provider}' not available. "
+                    f"Available providers: {available if available else 'None'}"
                 )
                 self.current_client = None
 
@@ -419,8 +490,8 @@ def test_llm_connectivity() -> Dict[str, Any]:
     try:
         if OPENAI_AVAILABLE and os.getenv("OPENAI_API_KEY"):
             client = OpenAIClient()
-            # Test basic connectivity by checking model access
-            if client.client and client.api_key:
+            # Test basic connectivity by checking client exists
+            if client.client:
                 results["openai"]["available"] = True
             else:
                 results["openai"]["error"] = "Client initialization failed"
@@ -435,8 +506,8 @@ def test_llm_connectivity() -> Dict[str, Any]:
     try:
         if ANTHROPIC_AVAILABLE and os.getenv("ANTHROPIC_API_KEY"):
             client = AnthropicClient()
-            # Test basic connectivity by checking client initialization
-            if client.client and client.api_key:
+            # Test basic connectivity by checking client exists
+            if client.client:
                 results["anthropic"]["available"] = True
             else:
                 results["anthropic"]["error"] = "Client initialization failed"

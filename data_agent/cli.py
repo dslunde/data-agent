@@ -2,6 +2,13 @@
 Command-line interface for the Data Agent.
 """
 
+# Load environment variables from .env file if it exists
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not available, skip
+
 import os
 import sys
 import asyncio
