@@ -120,12 +120,24 @@ class TestCLIDataLoading:
             test_df.to_csv(tmp_file.name, index=False)
 
             # Mock the DataAgentCore and its methods
-            with patch("data_agent.cli.DataAgentCore") as mock_core_class:
+            with patch("data_agent.core.DataAgentCore") as mock_core_class:
                 mock_core = Mock()
                 mock_core.load_local_dataset = AsyncMock(return_value={"shape": (3, 3)})
+                mock_core.get_dataset_info = Mock(return_value={
+                    "shape": (3, 3), 
+                    "columns": ["id", "value", "category"],
+                    "memory_usage_mb": 0.1,
+                    "completeness_score": 100.0
+                })
+                mock_core.process_query = AsyncMock(return_value={
+                    "query": "describe the data",
+                    "response": "This dataset contains 3 rows and 3 columns with categories A and B.",
+                    "analysis_method": "descriptive_statistics",
+                    "confidence": 0.95
+                })
                 mock_core_class.return_value = mock_core
 
-                with patch("data_agent.cli.test_llm_connectivity") as mock_connectivity:
+                with patch("data_agent.llm.clients.test_llm_connectivity") as mock_connectivity:
                     mock_connectivity.return_value = {
                         "anthropic": {"available": True, "error": None}
                     }
@@ -154,14 +166,26 @@ class TestCLIDataLoading:
     @pytest.mark.asyncio
     async def test_run_data_agent_download_mode(self):
         """Test running data agent with dataset download."""
-        with patch("data_agent.cli.DataAgentCore") as mock_core_class:
+        with patch("data_agent.core.DataAgentCore") as mock_core_class:
             mock_core = Mock()
             mock_core.download_and_load_dataset = AsyncMock(
                 return_value={"shape": (100, 5)}
             )
+            mock_core.get_dataset_info = Mock(return_value={
+                "shape": (100, 5), 
+                "columns": ["col1", "col2", "col3", "col4", "col5"],
+                "memory_usage_mb": 1.2,
+                "completeness_score": 95.0
+            })
+            mock_core.process_query = AsyncMock(return_value={
+                "query": "show statistics",
+                "response": "Statistics for 100 rows and 5 columns.",
+                "analysis_method": "statistical_summary",
+                "confidence": 0.85
+            })
             mock_core_class.return_value = mock_core
 
-            with patch("data_agent.cli.test_llm_connectivity") as mock_connectivity:
+            with patch("data_agent.llm.clients.test_llm_connectivity") as mock_connectivity:
                 mock_connectivity.return_value = {
                     "openai": {"available": True, "error": None}
                 }
@@ -181,13 +205,13 @@ class TestCLIDataLoading:
 
                 # Verify download was attempted
                 mock_core.download_and_load_dataset.assert_called_once_with(
-                    url="https://example.com/data.csv", sample_size=50
+                    "https://example.com/data.csv", 50
                 )
 
     @pytest.mark.asyncio
     async def test_no_llm_providers_available(self):
         """Test handling when no LLM providers are available."""
-        with patch("data_agent.cli.test_llm_connectivity") as mock_connectivity:
+        with patch("data_agent.llm.clients.test_llm_connectivity") as mock_connectivity:
             mock_connectivity.return_value = {
                 "openai": {"available": False, "error": "No API key"},
                 "anthropic": {"available": False, "error": "No API key"},
@@ -223,7 +247,7 @@ class TestCLIInteractiveMode:
     async def test_interactive_query_processing(self):
         """Test interactive query processing."""
         # Mock the core components
-        with patch("data_agent.cli.DataAgentCore") as mock_core_class:
+        with patch("data_agent.core.DataAgentCore") as mock_core_class:
             mock_core = Mock()
             mock_core.download_and_load_dataset = AsyncMock(
                 return_value={
@@ -232,6 +256,12 @@ class TestCLIInteractiveMode:
                     "completeness_score": 95.0,
                 }
             )
+            mock_core.get_dataset_info = Mock(return_value={
+                "shape": (100, 5),
+                "columns": ["id", "value", "category", "date", "score"],
+                "completeness_score": 95.0,
+                "memory_usage_mb": 2.1
+            })
             mock_core.process_query = AsyncMock(
                 return_value={
                     "query": "test query",
@@ -243,7 +273,7 @@ class TestCLIInteractiveMode:
             mock_core_class.return_value = mock_core
 
             # Mock connectivity
-            with patch("data_agent.cli.test_llm_connectivity") as mock_connectivity:
+            with patch("data_agent.llm.clients.test_llm_connectivity") as mock_connectivity:
                 mock_connectivity.return_value = {
                     "anthropic": {"available": True, "error": None}
                 }
@@ -305,8 +335,9 @@ class TestCLIOutputFormatting:
 
         assert "Analysis Result:" in formatted
         assert "The dataset contains 100 rows and 5 columns." in formatted
-        assert "Supporting Evidence:" in formatted
-        assert "Methodology:" in formatted
+        # Text format should be simple, detailed info is in "detailed" format
+        assert "Supporting Evidence:" not in formatted
+        assert "Methodology:" not in formatted
 
     def test_format_response_json(self):
         """Test JSON response formatting."""

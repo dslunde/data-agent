@@ -151,14 +151,15 @@ class TestDataLoader:
             mode="w", suffix=".json", delete=False
         ) as tmp_file:
             json.dump(test_data, tmp_file)
+            tmp_file_path = tmp_file.name
 
-            # Test loading
-            loaded_df = loader.load_dataset(tmp_file.name)
-            assert loaded_df.shape == (3, 3)
-            assert "id" in loaded_df.columns
+        # Test loading (file must be closed first)
+        loaded_df = loader.load_dataset(tmp_file_path)
+        assert loaded_df.shape == (3, 3)
+        assert "id" in loaded_df.columns
 
-            # Cleanup
-            Path(tmp_file.name).unlink()
+        # Cleanup
+        Path(tmp_file_path).unlink()
 
     def test_sample_size_limiting(self):
         """Test dataset sampling functionality."""

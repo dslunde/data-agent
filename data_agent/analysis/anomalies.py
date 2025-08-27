@@ -46,6 +46,12 @@ class AnomalyDetector:
         if columns is None:
             columns = df.select_dtypes(include=[np.number]).columns.tolist()
 
+        # Validate methods upfront
+        valid_methods = ["iqr", "zscore", "isolation_forest", "elliptic_envelope"]
+        invalid_methods = [m for m in methods if m not in valid_methods]
+        if invalid_methods:
+            return {"error": f"Invalid detection methods: {invalid_methods}. Valid methods: {valid_methods}"}
+
         # Validate columns
         columns = [col for col in columns if col in df.columns]
 

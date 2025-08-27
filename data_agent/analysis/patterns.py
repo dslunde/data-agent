@@ -387,6 +387,7 @@ class PatternAnalyzer:
             "algorithm": "dbscan",
             "parameters": {"eps": eps, "min_samples": min_samples},
             "features": features,
+            "n_clusters": n_clusters,  # Add at top level for consistency
             "cluster_assignments": cluster_labels.tolist(),  # Use standard API key
             "cluster_labels": cluster_labels.tolist(),  # Keep for backward compatibility
             "metrics": {

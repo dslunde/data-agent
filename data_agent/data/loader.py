@@ -297,6 +297,30 @@ class DataLoader:
         df.columns = new_columns
         return df
 
+    def _infer_datetime_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Infer and convert datetime columns in a DataFrame.
+        
+        Args:
+            df: DataFrame to process
+            
+        Returns:
+            DataFrame with datetime columns converted
+        """
+        df_copy = df.copy()
+        
+        for col in df_copy.columns:
+            if df_copy[col].dtype == "object":
+                try:
+                    # Try to convert to datetime
+                    pd.to_datetime(df_copy[col].dropna().head(50))
+                    # If successful, convert the entire column
+                    df_copy[col] = pd.to_datetime(df_copy[col])
+                except Exception:
+                    # If conversion fails, leave as is
+                    pass
+        
+        return df_copy
+
     def get_schema_info(self, df: pd.DataFrame) -> SchemaInfo:
         """Get comprehensive schema information."""
         return SchemaInfo(df)

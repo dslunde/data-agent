@@ -532,12 +532,28 @@ def format_response(response: dict, output_format: str) -> str:
             if evidence.get("columns_used"):
                 result += f"\n   • Columns used: {', '.join(evidence['columns_used'])}"
         
+        # Methodology
+        methodology = response.get("methodology", {})
+        if methodology:
+            result += "\n\nMethodology:"
+            if methodology.get("approach"):
+                result += f"\n   • Approach: {methodology['approach']}"
+            if methodology.get("parameters"):
+                for key, value in methodology["parameters"].items():
+                    result += f"\n   • {key.replace('_', ' ').title()}: {value}"
+        
+        # Important Notes - placeholder for any caveats or limitations
+        result += "\n\nImportant Notes:"
+        result += "\n   • Results are based on available data and selected methodology"
+        if response.get("analysis_method"):
+            result += f"\n   • Analysis method: {response['analysis_method']}"
+        
         # Confidence
         confidence = response.get("confidence", 0)
         if confidence:
             confidence_pct = confidence * 100
             confidence_level = "HIGH" if confidence > 0.8 else "MEDIUM" if confidence > 0.5 else "LOW"
-            result += f"\n\n{confidence_level} Confidence: {confidence_pct:.0f}%"
+            result += f"\n\nConfidence: {confidence_level} ({confidence_pct:.0f}%)"
     
     return result
 
@@ -560,28 +576,30 @@ def get_confidence_indicator(confidence: float) -> str:
         return "LOW"
 
 
-def display_dataset_info(dataset_info: dict) -> str:
+def display_dataset_info(dataset_info: dict, verbose: bool = False) -> None:
     """
-    Format dataset information for display.
+    Display dataset information using click.echo.
     
     Args:
         dataset_info: Dataset information dictionary
-        
-    Returns:
-        Formatted dataset info string
+        verbose: Whether to show detailed information
     """
     if not dataset_info or "error" in dataset_info:
-        return "Dataset information not available"
+        click.echo("Dataset information not available")
+        return
     
-    result = "Dataset Information:\n"
+    click.echo("Dataset Information:")
     
     # Basic info
     if "shape" in dataset_info:
         rows, cols = dataset_info["shape"]
-        result += f"   • Size: {rows:,} rows × {cols} columns\n"
+        click.echo(f"   • Size: {rows:,} rows x {cols} columns")
     
     if "memory_usage_mb" in dataset_info:
-        result += f"   • Memory: {dataset_info['memory_usage_mb']:.2f} MB\n"
+        click.echo(f"   • Memory: {dataset_info['memory_usage_mb']:.2f} MB")
+    
+    if "completeness_score" in dataset_info:
+        click.echo(f"   • Completeness: {dataset_info['completeness_score']:.1f}%")
     
     # Column types
     if "dtypes" in dataset_info:
@@ -590,18 +608,21 @@ def display_dataset_info(dataset_info: dict) -> str:
         for dtype in dtypes.values():
             type_counts[dtype] = type_counts.get(dtype, 0) + 1
         
-        result += "   • Column Types: "
         type_strs = [f"{count} {dtype}" for dtype, count in type_counts.items()]
-        result += ", ".join(type_strs) + "\n"
+        click.echo(f"   • Column Types: {', '.join(type_strs)}")
     
     # Missing data
     if "missing_percentages" in dataset_info:
         missing = dataset_info["missing_percentages"]
         cols_with_missing = [(col, pct) for col, pct in missing.items() if pct > 0]
         if cols_with_missing:
-            result += f"   • Missing Data: {len(cols_with_missing)} columns with missing values\n"
+            click.echo(f"   • Missing Data: {len(cols_with_missing)} columns with missing values")
     
-    return result
+    if verbose and "columns" in dataset_info:
+        columns = dataset_info["columns"]
+        click.echo(f"   • Columns: {', '.join(columns[:5])}")
+        if len(columns) > 5:
+            click.echo(f"            ... and {len(columns) - 5} more")
 
 
 if __name__ == "__main__":

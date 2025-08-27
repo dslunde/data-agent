@@ -40,8 +40,42 @@ class DataQualityAssessor:
 
         # Generate recommendations based on findings
         assessment["recommendations"] = self._generate_recommendations(assessment)
+        
+        # Calculate overall score as weighted average of component scores
+        scores = [
+            assessment["completeness"]["completeness_score"],
+            assessment["consistency"]["consistency_score"],
+            assessment["validity"]["validity_score"],
+            assessment["uniqueness"]["uniqueness_score"], 
+            assessment["accuracy"]["accuracy_score"]
+        ]
+        assessment["overall_score"] = round(sum(scores) / len(scores), 2)
+        
+        # Add column-level quality information
+        assessment["column_quality"] = self._assess_column_quality(df)
 
         return assessment
+
+    def _assess_column_quality(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Assess quality for each column individually."""
+        column_quality = {}
+        
+        for col in df.columns:
+            col_data = df[col]
+            missing_pct = (col_data.isnull().sum() / len(df)) * 100
+            
+            # Calculate column quality score
+            quality_score = 100 - missing_pct  # Basic scoring based on completeness
+            
+            column_quality[col] = {
+                "missing_percentage": round(missing_pct, 2),
+                "quality_score": round(quality_score, 2),
+                "data_type": str(col_data.dtype),
+                "unique_values": int(col_data.nunique()),
+                "null_count": int(col_data.isnull().sum())
+            }
+        
+        return column_quality
 
     def _get_overview(self, df: pd.DataFrame) -> Dict[str, Any]:
         """Get basic overview of the dataset."""
