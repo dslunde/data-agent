@@ -265,7 +265,7 @@ class DatasetDownloader:
         data_dir = self.data_dir.absolute()
         
         print(f"\n{'='*60}")
-        print("🔧 MANUAL DOWNLOAD REQUIRED")
+        print("MANUAL DOWNLOAD REQUIRED")
         print(f"{'='*60}")
         print(f"The automated download failed. Please manually download the file:")
         print(f"\n1. Open this URL in your browser:")

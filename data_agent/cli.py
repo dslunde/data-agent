@@ -122,7 +122,7 @@ def main(
 
     # Welcome message
     if not batch_mode:
-        click.echo("🤖 Welcome to Data Agent!")
+        click.echo("Welcome to Data Agent!")
         click.echo("Natural language interface for dataset analysis\n")
 
     try:
@@ -143,11 +143,11 @@ def main(
         )
 
     except KeyboardInterrupt:
-        click.echo("\n👋 Thanks for using Data Agent!")
+        click.echo("\nThanks for using Data Agent!")
         sys.exit(0)
     except Exception as e:
         logger.error(f"Application error: {e}")
-        click.echo(f"❌ Error: {e}", err=True)
+        click.echo(f"Error: {e}", err=True)
         if debug:
             import traceback
 
@@ -174,14 +174,14 @@ async def run_data_agent(
 
     # Test LLM connectivity first
     if verbose:
-        click.echo("🔍 Testing LLM connectivity...")
+        click.echo("Testing LLM connectivity...")
 
     connectivity = test_llm_connectivity()
     available_providers = [p for p, info in connectivity.items() if info["available"]]
 
     if not available_providers:
         click.echo(
-            "❌ No LLM providers available. Please check your API keys:", err=True
+            "No LLM providers available. Please check your API keys:", err=True
         )
         for provider_name, info in connectivity.items():
             click.echo(f"  - {provider_name}: {info['error']}", err=True)
@@ -191,7 +191,7 @@ async def run_data_agent(
         return
 
     if verbose:
-        click.echo(f"✅ Available providers: {', '.join(available_providers)}")
+        click.echo(f"Available providers: {', '.join(available_providers)}")
 
     # Initialize the core application
     try:
@@ -227,7 +227,7 @@ async def load_dataset(
     """Load dataset into the core application."""
 
     if verbose:
-        click.echo("📊 Loading dataset...")
+        click.echo("Loading dataset...")
 
     try:
         with click.progressbar(length=100, label="Loading dataset") as bar:
@@ -249,15 +249,15 @@ async def load_dataset(
         # Show dataset info
         dataset_info = core.get_dataset_info()
 
-        click.echo("✅ Dataset loaded successfully!")
+        click.echo("Dataset loaded successfully!")
         click.echo(
-            f"   📈 Shape: {dataset_info['shape'][0]:,} rows × {dataset_info['shape'][1]} columns"
+            f"   Shape: {dataset_info['shape'][0]:,} rows x {dataset_info['shape'][1]} columns"
         )
         click.echo(f"   💾 Memory: {dataset_info['memory_usage_mb']:.1f} MB")
-        click.echo(f"   📋 Completeness: {dataset_info['completeness_score']:.1f}%")
+        click.echo(f"   Completeness: {dataset_info['completeness_score']:.1f}%")
 
         if verbose:
-            click.echo(f"   🏷️  Columns: {', '.join(dataset_info['columns'][:5])}")
+            click.echo(f"   Columns: {', '.join(dataset_info['columns'][:5])}")
             if len(dataset_info["columns"]) > 5:
                 click.echo(
                     f"              ... and {len(dataset_info['columns']) - 5} more"
@@ -266,14 +266,14 @@ async def load_dataset(
         click.echo()
 
     except Exception as e:
-        click.echo(f"❌ Failed to load dataset: {e}", err=True)
+        click.echo(f"Failed to load dataset: {e}", err=True)
         raise
 
 
 async def run_batch_query(core, query: str, output_format: str):
     """Run a single query in batch mode."""
 
-    click.echo(f"🔍 Processing query: {query}")
+    click.echo(f"Processing query: {query}")
 
     try:
         with click.progressbar(length=100, label="Analyzing") as bar:
@@ -285,7 +285,7 @@ async def run_batch_query(core, query: str, output_format: str):
         format_and_display_response(response, output_format)
 
     except Exception as e:
-        click.echo(f"❌ Query failed: {e}", err=True)
+        click.echo(f"Query failed: {e}", err=True)
         raise
 
 
@@ -301,12 +301,12 @@ async def run_interactive_mode(core, output_format: str, verbose: bool):
         try:
             # Get user input
             query = click.prompt(
-                click.style("🤖 Ask me anything about your data", fg="cyan"), type=str
+                click.style("Ask me anything about your data", fg="cyan"), type=str
             ).strip()
 
             # Handle special commands
             if query.lower() in ["exit", "quit", "q"]:
-                click.echo("👋 Thanks for using Data Agent!")
+                click.echo("Thanks for using Data Agent!")
                 break
 
             elif query.lower() in ["help", "h", "?"]:
@@ -332,7 +332,7 @@ async def run_interactive_mode(core, output_format: str, verbose: bool):
             # Process data query
             if query:
                 query_count += 1
-                click.echo(f"\n🔍 Query #{query_count}: {query}")
+                click.echo(f"\nQuery #{query_count}: {query}")
 
                 try:
                     with click.progressbar(length=100, label="Analyzing") as bar:
@@ -344,7 +344,7 @@ async def run_interactive_mode(core, output_format: str, verbose: bool):
                     format_and_display_response(response, output_format)
 
                 except Exception as e:
-                    click.echo(f"❌ Query failed: {e}", err=True)
+                    click.echo(f"Query failed: {e}", err=True)
                     if verbose:
                         import traceback
 
@@ -353,23 +353,23 @@ async def run_interactive_mode(core, output_format: str, verbose: bool):
                 click.echo()
 
         except (EOFError, KeyboardInterrupt):
-            click.echo("\n👋 Thanks for using Data Agent!")
+            click.echo("\nThanks for using Data Agent!")
             break
         except Exception as e:
-            click.echo(f"❌ Error: {e}", err=True)
+            click.echo(f"Error: {e}", err=True)
             continue
 
 
 def show_interactive_help():
     """Show interactive mode help."""
-    click.echo("\n📚 Available commands:")
+    click.echo("\nAvailable commands:")
     click.echo("  • Ask any question about your data in natural language")
     click.echo("  • help, h, ?     - Show this help")
     click.echo("  • info, dataset  - Show dataset information")
     click.echo("  • examples, ex   - Show example queries")
     click.echo("  • clear, cls     - Clear screen")
     click.echo("  • exit, quit, q  - Exit the application")
-    click.echo("\n💡 Try asking things like:")
+    click.echo("\nTry asking things like:")
     click.echo('  • "Show me basic statistics"')
     click.echo('  • "Find correlations between variables"')
     click.echo('  • "Detect outliers in the data"')
@@ -382,12 +382,12 @@ def show_dataset_info(core):
     try:
         info = core.get_dataset_info()
 
-        click.echo("\n📊 Dataset Information:")
-        click.echo(f"   Shape: {info['shape'][0]:,} rows × {info['shape'][1]} columns")
+        click.echo("\nDataset Information:")
+        click.echo(f"   Shape: {info['shape'][0]:,} rows x {info['shape'][1]} columns")
         click.echo(f"   Memory: {info['memory_usage_mb']:.1f} MB")
         click.echo(f"   Completeness: {info['completeness_score']:.1f}%")
 
-        click.echo(f"\n🏷️  Columns ({len(info['columns'])}):")
+        click.echo(f"\nColumns ({len(info['columns'])}):")
         for i, col in enumerate(info["columns"]):
             if i < 20:  # Show first 20 columns
                 dtype = info.get("column_types", {}).get(col, "unknown")
@@ -398,28 +398,28 @@ def show_dataset_info(core):
 
         click.echo()
     except Exception as e:
-        click.echo(f"❌ Error getting dataset info: {e}", err=True)
+        click.echo(f"Error getting dataset info: {e}", err=True)
 
 
 def show_example_queries():
     """Show example queries."""
-    click.echo("\n💡 Example queries you can try:")
-    click.echo("\n📈 Basic Analysis:")
+    click.echo("\nExample queries you can try:")
+    click.echo("\nBasic Analysis:")
     click.echo('  • "Describe the dataset"')
     click.echo('  • "Show summary statistics"')
     click.echo('  • "What are the column types?"')
 
-    click.echo("\n🔍 Exploratory Analysis:")
+    click.echo("\nExploratory Analysis:")
     click.echo('  • "Find correlations between variables"')
     click.echo('  • "Group customers into clusters"')
     click.echo('  • "Show the distribution of prices"')
 
-    click.echo("\n⚠️  Anomaly Detection:")
+    click.echo("\nAnomaly Detection:")
     click.echo('  • "Find outliers in sales data"')
     click.echo('  • "Detect unusual patterns"')
     click.echo('  • "What data points look strange?"')
 
-    click.echo("\n📊 Comparative Analysis:")
+    click.echo("\nComparative Analysis:")
     click.echo('  • "Compare performance by region"')
     click.echo('  • "Show differences between groups"')
     click.echo('  • "Analyze segments separately"')
@@ -451,12 +451,12 @@ def format_and_display_response(response: dict, output_format: str):
 
     # Text format (default)
     if "error" in response:
-        click.echo(f"❌ {response['error']}")
+        click.echo(f"Error: {response['error']}")
         return
 
     # Main response
     main_response = response.get("response", "No response generated")
-    click.echo("📋 Analysis Result:")
+    click.echo("Analysis Result:")
     click.echo(f"   {main_response}")
 
     if output_format == "detailed":
@@ -465,7 +465,7 @@ def format_and_display_response(response: dict, output_format: str):
         # Evidence
         evidence = response.get("evidence", {})
         if evidence:
-            click.echo("\n📊 Supporting Evidence:")
+            click.echo("\nSupporting Evidence:")
             if evidence.get("data_points_analyzed"):
                 click.echo(f"   • Data points: {evidence['data_points_analyzed']:,}")
             if evidence.get("columns_used"):
@@ -482,12 +482,12 @@ def format_and_display_response(response: dict, output_format: str):
         # Methodology
         methodology = response.get("methodology", {})
         if methodology and methodology.get("approach"):
-            click.echo(f"\n🔬 Methodology: {methodology['approach']}")
+            click.echo(f"\nMethodology: {methodology['approach']}")
 
         # Caveats
         caveats = response.get("caveats", [])
         if caveats:
-            click.echo("\n⚠️  Important Notes:")
+            click.echo("\nImportant Notes:")
             for caveat in caveats[:3]:  # Show top 3 caveats
                 click.echo(f"   • {caveat}")
 
@@ -496,7 +496,7 @@ def format_and_display_response(response: dict, output_format: str):
         if confidence:
             confidence_pct = confidence * 100
             confidence_emoji = (
-                "🟢" if confidence > 0.8 else "🟡" if confidence > 0.5 else "🔴"
+                "HIGH" if confidence > 0.8 else "MEDIUM" if confidence > 0.5 else "LOW"
             )
             click.echo(f"\n{confidence_emoji} Confidence: {confidence_pct:.0f}%")
 
