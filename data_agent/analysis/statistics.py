@@ -4,9 +4,12 @@ Core statistical analysis functions for data agent.
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Any, Union, Optional
+from typing import Dict, List, Any, Union, Optional, Tuple
 import logging
 from scipy import stats
+from scipy.stats import t, norm
+from sklearn.utils import resample
+import warnings
 
 logger = logging.getLogger(__name__)
 
@@ -296,14 +299,19 @@ class StatisticalAnalyzer:
 
             for target_col in target_columns:
                 if df[target_col].dtype in [np.number]:
+                    # Calculate basic statistics
                     group_stats = (
                         grouped[target_col]
                         .agg(["count", "mean", "median", "std", "min", "max"])
                         .fillna(0)
                     )
-                    result["group_statistics"][target_col] = group_stats.to_dict(
-                        "index"
+                    
+                    # Add confidence intervals and statistical testing
+                    enhanced_stats = self._enhance_group_statistics(
+                        df, group_column, target_col, group_stats
                     )
+                    
+                    result["group_statistics"][target_col] = enhanced_stats
 
             return result
 
@@ -558,6 +566,386 @@ class StatisticalAnalyzer:
             "datetime_columns": len(df.select_dtypes(include=["datetime64"]).columns),
             "boolean_columns": len(df.select_dtypes(include=[bool]).columns),
         }
+
+    def _enhance_group_statistics(self, df: pd.DataFrame, group_column: str, 
+                                 target_column: str, basic_stats: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Enhance group statistics with confidence intervals and statistical testing.
+        
+        Args:
+            df: DataFrame with data
+            group_column: Column used for grouping
+            target_column: Target variable column
+            basic_stats: Basic statistics from pandas groupby
+            
+        Returns:
+            Enhanced statistics with confidence intervals and tests
+        """
+        try:
+            enhanced_stats = {}
+            
+            # Convert basic stats to dict format
+            basic_stats_dict = basic_stats.to_dict("index")
+            
+            # Get group data for statistical testing
+            groups = []
+            group_names = []
+            
+            for group_name in basic_stats.index:
+                group_data = df[df[group_column] == group_name][target_column].dropna()
+                if len(group_data) >= 3:  # Minimum for meaningful CI
+                    groups.append(group_data.values)
+                    group_names.append(group_name)
+            
+            # Perform statistical tests if we have multiple groups
+            statistical_test_results = None
+            if len(groups) >= 2:
+                statistical_test_results = self._perform_group_comparison_test(
+                    groups, group_names
+                )
+            
+            # Calculate confidence intervals and enhanced stats for each group
+            for group_name, stats_row in basic_stats_dict.items():
+                group_data = df[df[group_column] == group_name][target_column].dropna()
+                
+                # Calculate confidence intervals
+                confidence_intervals = self._calculate_mean_confidence_interval(group_data)
+                
+                # Calculate additional robust statistics
+                robust_stats = self._calculate_robust_statistics(group_data)
+                
+                enhanced_stats[group_name] = {
+                    **stats_row,  # Include original statistics
+                    "confidence_intervals": confidence_intervals,
+                    "robust_statistics": robust_stats,
+                    "sample_size": len(group_data)
+                }
+            
+            # Add overall test results
+            result = {
+                "group_statistics": enhanced_stats,
+                "statistical_comparison": statistical_test_results,
+                "methodology": {
+                    "confidence_level": 0.95,
+                    "confidence_method": "t-distribution for means",
+                    "robust_statistics": "median, IQR, MAD",
+                    "group_testing": "ANOVA with assumption validation"
+                }
+            }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error enhancing group statistics: {e}")
+            # Fallback to basic statistics
+            return basic_stats.to_dict("index")
+    
+    def _calculate_mean_confidence_interval(self, data: pd.Series, confidence: float = 0.95) -> Dict[str, Any]:
+        """
+        Calculate confidence interval for the mean.
+        
+        Args:
+            data: Data series
+            confidence: Confidence level (default 0.95)
+            
+        Returns:
+            Confidence interval information
+        """
+        try:
+            if len(data) < 2:
+                return {"error": "Insufficient data for confidence interval"}
+            
+            mean_val = float(data.mean())
+            std_val = float(data.std(ddof=1))
+            n = len(data)
+            
+            # Use t-distribution for small samples
+            alpha = 1 - confidence
+            t_critical = t.ppf(1 - alpha/2, df=n-1)
+            
+            margin_error = t_critical * std_val / np.sqrt(n)
+            
+            return {
+                "mean": mean_val,
+                "lower": float(mean_val - margin_error),
+                "upper": float(mean_val + margin_error),
+                "margin_error": float(margin_error),
+                "confidence_level": confidence,
+                "method": "t-distribution"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating confidence interval: {e}")
+            return {"error": str(e)}
+    
+    def _calculate_robust_statistics(self, data: pd.Series) -> Dict[str, Any]:
+        """
+        Calculate robust statistical measures.
+        
+        Args:
+            data: Data series
+            
+        Returns:
+            Robust statistics
+        """
+        try:
+            if len(data) == 0:
+                return {"error": "No data for robust statistics"}
+            
+            # Calculate robust measures
+            median_val = float(data.median())
+            q25 = float(data.quantile(0.25))
+            q75 = float(data.quantile(0.75))
+            iqr = q75 - q25
+            
+            # Median Absolute Deviation (MAD)
+            mad = float(np.median(np.abs(data - median_val)))
+            
+            # Robust coefficient of variation
+            robust_cv = mad / median_val if median_val != 0 else np.inf
+            
+            return {
+                "median": median_val,
+                "q25": q25,
+                "q75": q75,
+                "iqr": iqr,
+                "mad": mad,
+                "robust_cv": float(robust_cv),
+                "outlier_bounds": {
+                    "lower": q25 - 1.5 * iqr,
+                    "upper": q75 + 1.5 * iqr
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating robust statistics: {e}")
+            return {"error": str(e)}
+    
+    def _perform_group_comparison_test(self, groups: List[np.ndarray], 
+                                     group_names: List[str]) -> Dict[str, Any]:
+        """
+        Perform statistical test to compare groups.
+        
+        Args:
+            groups: List of group data arrays
+            group_names: Names of the groups
+            
+        Returns:
+            Statistical test results
+        """
+        try:
+            if len(groups) < 2:
+                return {"error": "Need at least 2 groups for comparison"}
+            
+            # Test normality assumption
+            normality_results = []
+            all_normal = True
+            
+            for i, group in enumerate(groups):
+                if len(group) >= 3 and len(group) <= 5000:
+                    try:
+                        stat, p_val = stats.shapiro(group)
+                        is_normal = p_val > 0.05
+                        normality_results.append({
+                            "group": group_names[i],
+                            "statistic": float(stat),
+                            "p_value": float(p_val),
+                            "normal": is_normal
+                        })
+                        if not is_normal:
+                            all_normal = False
+                    except Exception as e:
+                        logger.warning(f"Normality test failed for group {group_names[i]}: {e}")
+                        all_normal = False
+            
+            # Test homogeneity of variance
+            homogeneity_result = None
+            homogeneous = True
+            
+            if len(groups) >= 2:
+                try:
+                    stat, p_val = stats.levene(*groups)
+                    homogeneous = p_val > 0.05
+                    homogeneity_result = {
+                        "statistic": float(stat),
+                        "p_value": float(p_val),
+                        "homogeneous": homogeneous
+                    }
+                except Exception as e:
+                    logger.warning(f"Homogeneity test failed: {e}")
+                    homogeneous = False
+            
+            # Choose appropriate test
+            if all_normal and homogeneous:
+                # Use ANOVA
+                f_stat, p_value = stats.f_oneway(*groups)
+                test_name = "ANOVA (Parametric)"
+                statistic = f_stat
+                
+                # Calculate eta-squared effect size
+                effect_size = self._calculate_anova_effect_size(groups, f_stat)
+                
+            else:
+                # Use Kruskal-Wallis test
+                h_stat, p_value = stats.kruskal(*groups)
+                test_name = "Kruskal-Wallis (Non-parametric)"
+                statistic = h_stat
+                
+                # Calculate epsilon-squared effect size
+                effect_size = self._calculate_kruskal_effect_size(groups, h_stat)
+            
+            # Pairwise comparisons if significant
+            pairwise_results = None
+            if p_value < 0.05 and len(groups) > 2:
+                pairwise_results = self._perform_pairwise_comparisons(groups, group_names)
+            
+            result = {
+                "test": test_name,
+                "statistic": float(statistic),
+                "p_value": float(p_value),
+                "significant": p_value < 0.05,
+                "effect_size": effect_size,
+                "assumptions": {
+                    "normality_tests": normality_results,
+                    "homogeneity_test": homogeneity_result,
+                    "assumptions_met": all_normal and homogeneous
+                },
+                "pairwise_comparisons": pairwise_results,
+                "sample_sizes": [len(group) for group in groups],
+                "group_names": group_names
+            }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in group comparison test: {e}")
+            return {"error": str(e)}
+    
+    def _calculate_anova_effect_size(self, groups: List[np.ndarray], f_stat: float) -> Dict[str, Any]:
+        """Calculate eta-squared effect size for ANOVA."""
+        try:
+            k = len(groups)  # number of groups
+            n_total = sum(len(group) for group in groups)
+            df_between = k - 1
+            df_within = n_total - k
+            
+            eta_squared = (f_stat * df_between) / (f_stat * df_between + df_within)
+            
+            # Interpret effect size
+            if eta_squared < 0.01:
+                interpretation = "negligible"
+            elif eta_squared < 0.06:
+                interpretation = "small"
+            elif eta_squared < 0.14:
+                interpretation = "medium"
+            else:
+                interpretation = "large"
+            
+            return {
+                "eta_squared": float(eta_squared),
+                "interpretation": interpretation,
+                "type": "eta-squared"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating ANOVA effect size: {e}")
+            return {"error": str(e)}
+    
+    def _calculate_kruskal_effect_size(self, groups: List[np.ndarray], h_stat: float) -> Dict[str, Any]:
+        """Calculate epsilon-squared effect size for Kruskal-Wallis."""
+        try:
+            n_total = sum(len(group) for group in groups)
+            k = len(groups)
+            
+            epsilon_squared = (h_stat - k + 1) / (n_total - k)
+            epsilon_squared = max(0, epsilon_squared)  # Ensure non-negative
+            
+            # Interpret effect size (similar to eta-squared)
+            if epsilon_squared < 0.01:
+                interpretation = "negligible"
+            elif epsilon_squared < 0.06:
+                interpretation = "small"
+            elif epsilon_squared < 0.14:
+                interpretation = "medium"
+            else:
+                interpretation = "large"
+            
+            return {
+                "epsilon_squared": float(epsilon_squared),
+                "interpretation": interpretation,
+                "type": "epsilon-squared"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating Kruskal-Wallis effect size: {e}")
+            return {"error": str(e)}
+    
+    def _perform_pairwise_comparisons(self, groups: List[np.ndarray], 
+                                    group_names: List[str]) -> List[Dict[str, Any]]:
+        """
+        Perform pairwise comparisons between groups.
+        
+        Args:
+            groups: List of group data arrays
+            group_names: Names of the groups
+            
+        Returns:
+            List of pairwise comparison results
+        """
+        try:
+            comparisons = []
+            
+            for i in range(len(groups)):
+                for j in range(i + 1, len(groups)):
+                    group1, group2 = groups[i], groups[j]
+                    name1, name2 = group_names[i], group_names[j]
+                    
+                    # Perform Mann-Whitney U test (non-parametric)
+                    try:
+                        statistic, p_value = stats.mannwhitneyu(
+                            group1, group2, alternative="two-sided"
+                        )
+                        
+                        # Calculate effect size (rank-biserial correlation)
+                        n1, n2 = len(group1), len(group2)
+                        r = 1 - (2 * statistic) / (n1 * n2)
+                        
+                        # Effect size interpretation
+                        abs_r = abs(r)
+                        if abs_r < 0.1:
+                            effect_interpretation = "negligible"
+                        elif abs_r < 0.3:
+                            effect_interpretation = "small"
+                        elif abs_r < 0.5:
+                            effect_interpretation = "medium"
+                        else:
+                            effect_interpretation = "large"
+                        
+                        comparisons.append({
+                            "group1": name1,
+                            "group2": name2,
+                            "statistic": float(statistic),
+                            "p_value": float(p_value),
+                            "significant": p_value < 0.05,
+                            "effect_size": {
+                                "rank_biserial_correlation": float(r),
+                                "interpretation": effect_interpretation
+                            },
+                            "medians": {
+                                name1: float(np.median(group1)),
+                                name2: float(np.median(group2))
+                            }
+                        })
+                        
+                    except Exception as e:
+                        logger.warning(f"Pairwise comparison failed for {name1} vs {name2}: {e}")
+                        continue
+            
+            return comparisons
+            
+        except Exception as e:
+            logger.error(f"Error in pairwise comparisons: {e}")
+            return []
 
 
 def get_default_statistical_analyzer() -> StatisticalAnalyzer:

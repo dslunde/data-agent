@@ -7,9 +7,12 @@ import numpy as np
 from typing import Dict, List, Any, Optional
 import logging
 from scipy import stats
+from scipy.stats import normaltest, jarque_bera, anderson
 from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.covariance import EllipticEnvelope
+from sklearn.utils import resample
+import warnings
 
 from ..constants import ResponseKeys
 
@@ -61,10 +64,14 @@ class AnomalyDetector:
             return {"error": "No valid numeric columns for outlier detection"}
 
         try:
+            # Validate data assumptions before applying methods
+            data_validation = self._validate_outlier_detection_assumptions(df, columns)
+            
             results = {
                 "analyzed_columns": columns,
                 "methods_used": methods,
                 "contamination": contamination,
+                "data_validation": data_validation,
                 "outlier_summary": {},
                 "detailed_results": {},
             }

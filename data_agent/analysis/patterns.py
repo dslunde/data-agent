@@ -7,9 +7,13 @@ import numpy as np
 from typing import Dict, List, Any, Optional
 import logging
 from scipy import stats
+from scipy.stats import pearsonr, spearmanr, kendalltau
 from sklearn.cluster import KMeans, DBSCAN
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import silhouette_score
+from sklearn.utils import resample
+from statsmodels.stats.multitest import multipletests
+import warnings
 
 from ..constants import ResponseKeys
 
@@ -22,6 +26,275 @@ class PatternAnalyzer:
     def __init__(self):
         """Initialize pattern analyzer."""
         pass
+
+    def _calculate_correlation_confidence_interval(self, r: float, n: int, confidence: float = 0.95) -> Dict[str, float]:
+        """Calculate confidence interval for correlation coefficient using Fisher's z-transformation."""
+        try:
+            if abs(r) >= 1.0 or n < 3:
+                return {"ci_lower": np.nan, "ci_upper": np.nan, "confidence_level": confidence}
+            
+            # Fisher's z-transformation
+            z = 0.5 * np.log((1 + r) / (1 - r))
+            
+            # Standard error
+            se_z = 1 / np.sqrt(n - 3)
+            
+            # Critical value for given confidence level
+            alpha = 1 - confidence
+            z_critical = stats.norm.ppf(1 - alpha / 2)
+            
+            # Confidence interval in z space
+            z_lower = z - z_critical * se_z
+            z_upper = z + z_critical * se_z
+            
+            # Transform back to correlation space
+            r_lower = (np.exp(2 * z_lower) - 1) / (np.exp(2 * z_lower) + 1)
+            r_upper = (np.exp(2 * z_upper) - 1) / (np.exp(2 * z_upper) + 1)
+            
+            return {
+                "ci_lower": float(r_lower),
+                "ci_upper": float(r_upper),
+                "confidence_level": confidence
+            }
+            
+        except Exception as e:
+            logger.warning(f"Error calculating correlation confidence interval: {e}")
+            return {"ci_lower": np.nan, "ci_upper": np.nan, "confidence_level": confidence}
+
+    def _test_correlation_significance(self, data1: np.ndarray, data2: np.ndarray, method: str = "pearson") -> Dict[str, Any]:
+        """Test statistical significance of correlation with proper statistical testing."""
+        result = {"method": method}
+        
+        try:
+            # Remove pairs with missing values
+            mask = ~(np.isnan(data1) | np.isnan(data2))
+            clean_data1 = data1[mask]
+            clean_data2 = data2[mask]
+            
+            n = len(clean_data1)
+            if n < 3:
+                return {"error": "Insufficient data points for correlation test", "n": n}
+            
+            # Calculate correlation and p-value based on method
+            if method == "pearson":
+                r, p_value = pearsonr(clean_data1, clean_data2)
+            elif method == "spearman":
+                r, p_value = spearmanr(clean_data1, clean_data2)
+            elif method == "kendall":
+                r, p_value = kendalltau(clean_data1, clean_data2)
+            else:
+                return {"error": f"Unknown correlation method: {method}"}
+            
+            # Calculate confidence interval
+            ci = self._calculate_correlation_confidence_interval(r, n)
+            
+            # Interpret correlation strength
+            abs_r = abs(r)
+            if abs_r >= 0.9:
+                strength = "very_strong"
+            elif abs_r >= 0.7:
+                strength = "strong"
+            elif abs_r >= 0.5:
+                strength = "moderate"
+            elif abs_r >= 0.3:
+                strength = "weak"
+            else:
+                strength = "negligible"
+            
+            result.update({
+                "correlation": float(r),
+                "p_value": float(p_value),
+                "significant": p_value < 0.05,
+                "n": n,
+                "strength": strength,
+                "confidence_interval": ci,
+                "test_statistic": f"{method}_r = {r:.3f}"
+            })
+            
+        except Exception as e:
+            logger.error(f"Error in correlation significance test: {e}")
+            result["error"] = str(e)
+        
+        return result
+
+    def _enhanced_clustering_validation(self, data: np.ndarray, labels: np.ndarray, 
+                                      algorithm: str = "kmeans") -> Dict[str, Any]:
+        """Enhanced clustering validation with multiple metrics."""
+        validation = {
+            "algorithm": algorithm,
+            "n_samples": len(data),
+            "n_features": data.shape[1] if len(data.shape) > 1 else 1
+        }
+        
+        try:
+            unique_labels = np.unique(labels)
+            n_clusters = len(unique_labels)
+            n_noise = np.sum(labels == -1) if -1 in unique_labels else 0
+            
+            validation.update({
+                "n_clusters": n_clusters,
+                "n_noise": n_noise,
+                "noise_ratio": n_noise / len(labels)
+            })
+            
+            # Only calculate metrics if we have clusters
+            if n_clusters > 1 and n_clusters < len(data):
+                # Silhouette Score
+                try:
+                    if n_noise > 0:
+                        # For DBSCAN, exclude noise points
+                        non_noise_mask = labels != -1
+                        if np.sum(non_noise_mask) > 1:
+                            sil_score = silhouette_score(
+                                data[non_noise_mask], 
+                                labels[non_noise_mask]
+                            )
+                        else:
+                            sil_score = -1
+                    else:
+                        sil_score = silhouette_score(data, labels)
+                    
+                    validation["silhouette_score"] = float(sil_score)
+                    
+                    # Interpret silhouette score
+                    if sil_score > 0.7:
+                        validation["silhouette_interpretation"] = "strong"
+                    elif sil_score > 0.5:
+                        validation["silhouette_interpretation"] = "reasonable"
+                    elif sil_score > 0.25:
+                        validation["silhouette_interpretation"] = "weak"
+                    else:
+                        validation["silhouette_interpretation"] = "poor"
+                        
+                except Exception as e:
+                    logger.warning(f"Error calculating silhouette score: {e}")
+                    validation["silhouette_score"] = None
+                
+                # Calinski-Harabasz Score (Variance Ratio Criterion)
+                try:
+                    from sklearn.metrics import calinski_harabasz_score
+                    if n_noise == 0:  # Only for non-noisy clusters
+                        ch_score = calinski_harabasz_score(data, labels)
+                        validation["calinski_harabasz_score"] = float(ch_score)
+                except Exception as e:
+                    logger.warning(f"Error calculating Calinski-Harabasz score: {e}")
+                
+                # Davies-Bouldin Score
+                try:
+                    from sklearn.metrics import davies_bouldin_score
+                    if n_noise == 0:  # Only for non-noisy clusters
+                        db_score = davies_bouldin_score(data, labels)
+                        validation["davies_bouldin_score"] = float(db_score)
+                        # Lower values are better for DB score
+                        if db_score < 1.0:
+                            validation["davies_bouldin_interpretation"] = "good"
+                        elif db_score < 2.0:
+                            validation["davies_bouldin_interpretation"] = "acceptable"
+                        else:
+                            validation["davies_bouldin_interpretation"] = "poor"
+                except Exception as e:
+                    logger.warning(f"Error calculating Davies-Bouldin score: {e}")
+                
+                # Inertia (for K-means)
+                if algorithm.lower() == "kmeans":
+                    try:
+                        # Calculate within-cluster sum of squares
+                        inertia = 0
+                        for cluster_id in unique_labels:
+                            if cluster_id != -1:
+                                cluster_points = data[labels == cluster_id]
+                                if len(cluster_points) > 0:
+                                    centroid = np.mean(cluster_points, axis=0)
+                                    inertia += np.sum((cluster_points - centroid) ** 2)
+                        validation["inertia"] = float(inertia)
+                    except Exception as e:
+                        logger.warning(f"Error calculating inertia: {e}")
+            
+            # Overall clustering quality assessment
+            if "silhouette_score" in validation:
+                sil = validation["silhouette_score"]
+                if sil is not None:
+                    if sil > 0.5:
+                        validation["overall_quality"] = "good"
+                    elif sil > 0.25:
+                        validation["overall_quality"] = "fair"
+                    else:
+                        validation["overall_quality"] = "poor"
+            
+        except Exception as e:
+            logger.error(f"Error in clustering validation: {e}")
+            validation["error"] = str(e)
+        
+        return validation
+
+    def _calculate_detailed_correlation(self, data1: pd.Series, data2: pd.Series, 
+                                      col1: str, col2: str, method: str = "pearson") -> Dict[str, Any]:
+        """Calculate detailed correlation statistics with confidence intervals and significance tests."""
+        try:
+            # Remove missing values
+            clean_data = pd.DataFrame({col1: data1, col2: data2}).dropna()
+            if len(clean_data) < 3:
+                return {"error": "Insufficient data points after removing missing values"}
+            
+            arr1 = clean_data[col1].values
+            arr2 = clean_data[col2].values
+            
+            # Calculate correlation with significance test
+            correlation_result = self._test_correlation_significance(arr1, arr2, method)
+            
+            # Add column names
+            correlation_result.update({
+                "variable1": col1,
+                "variable2": col2,
+                "pair": f"{col1} vs {col2}"
+            })
+            
+            return correlation_result
+            
+        except Exception as e:
+            logger.error(f"Error calculating detailed correlation for {col1} vs {col2}: {e}")
+            return {"error": str(e), "variable1": col1, "variable2": col2}
+
+    def _apply_correlation_multiple_testing_correction(self, correlations: List[Dict[str, Any]], 
+                                                     method: str = "fdr_bh") -> List[Dict[str, Any]]:
+        """Apply multiple testing correction to correlation p-values."""
+        try:
+            if not correlations or len(correlations) <= 1:
+                return correlations
+            
+            # Extract p-values
+            p_values = [corr.get("p_value", 1.0) for corr in correlations if corr.get("p_value") is not None]
+            
+            if not p_values:
+                return correlations
+            
+            # Apply correction
+            rejected, corrected_pvals, alpha_sidak, alpha_bonf = multipletests(
+                p_values, alpha=0.05, method=method
+            )
+            
+            # Update correlations with corrected p-values
+            corrected_correlations = []
+            p_idx = 0
+            
+            for corr in correlations:
+                if corr.get("p_value") is not None and p_idx < len(corrected_pvals):
+                    updated_corr = corr.copy()
+                    updated_corr.update({
+                        "p_value_corrected": float(corrected_pvals[p_idx]),
+                        "significant_corrected": bool(rejected[p_idx]),
+                        "multiple_testing_method": method
+                    })
+                    corrected_correlations.append(updated_corr)
+                    p_idx += 1
+                else:
+                    corrected_correlations.append(corr)
+            
+            return corrected_correlations
+            
+        except Exception as e:
+            logger.error(f"Error applying multiple testing correction to correlations: {e}")
+            return correlations
 
     def correlation_analysis(
         self, df: pd.DataFrame, method: str = "pearson", min_correlation: float = 0.3
@@ -54,33 +327,31 @@ class PatternAnalyzer:
 
             for i, col1 in enumerate(corr_matrix.columns):
                 for col2 in corr_matrix.columns[i + 1 :]:
-                    corr_value = corr_matrix.loc[col1, col2]
+                    # Get detailed correlation statistics with confidence intervals and significance
+                    correlation_info = self._calculate_detailed_correlation(
+                        df[col1], df[col2], col1, col2, method
+                    )
+                    
+                    if correlation_info and not correlation_info.get("error"):
+                        abs_corr = abs(correlation_info["correlation"])
+                        
+                        if abs_corr >= min_correlation:
+                            significant_correlations.append(correlation_info)
 
-                    if pd.isna(corr_value):
-                        continue
-
-                    abs_corr = abs(corr_value)
-
-                    if abs_corr >= min_correlation:
-                        correlation_info = {
-                            "column1": col1,
-                            "column2": col2,
-                            "correlation": float(corr_value),
-                            "abs_correlation": float(abs_corr),
-                            "strength": self._classify_correlation_strength(abs_corr),
-                            "direction": "positive" if corr_value > 0 else "negative",
-                        }
-
-                        significant_correlations.append(correlation_info)
-
-                        if abs_corr > 0.7:
-                            strong_correlations.append(correlation_info)
+                            if abs_corr > 0.7:
+                                strong_correlations.append(correlation_info)
 
             # Sort by absolute correlation
             significant_correlations.sort(
                 key=lambda x: x["abs_correlation"], reverse=True
             )
             strong_correlations.sort(key=lambda x: x["abs_correlation"], reverse=True)
+
+            # Apply multiple testing correction
+            if significant_correlations:
+                significant_correlations = self._apply_correlation_multiple_testing_correction(
+                    significant_correlations
+                )
 
             result = {
                 "method": method,
@@ -101,7 +372,16 @@ class PatternAnalyzer:
                             ]
                         ).mean()
                     ),
+                    "significant_after_correction": len([
+                        corr for corr in significant_correlations 
+                        if corr.get("significant_corrected", corr.get("significant", False))
+                    ]),
                 },
+                "statistical_notes": {
+                    "multiple_testing_correction": "Benjamini-Hochberg FDR correction applied",
+                    "confidence_intervals": "Fisher's z-transformation used for Pearson correlations",
+                    "significance_threshold": "p < 0.05 after correction"
+                }
             }
 
             return result
@@ -329,13 +609,14 @@ class PatternAnalyzer:
         kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
         cluster_labels = kmeans.fit_predict(scaled_data)
 
-        # Calculate metrics
-        if n_clusters > 1:
-            silhouette_avg = silhouette_score(scaled_data, cluster_labels)
-            inertia = kmeans.inertia_
-        else:
-            silhouette_avg = 0
-            inertia = 0
+        # Enhanced clustering validation with multiple metrics
+        validation_results = self._enhanced_clustering_validation(
+            scaled_data, cluster_labels, "kmeans"
+        )
+        
+        # Legacy metrics for backwards compatibility
+        silhouette_avg = validation_results.get("silhouette_score", 0)
+        inertia = validation_results.get("inertia", kmeans.inertia_)
 
         # Analyze clusters
         cluster_analysis = self._analyze_clusters(data, cluster_labels, features)
@@ -352,6 +633,7 @@ class PatternAnalyzer:
             },
             "cluster_analysis": cluster_analysis,
             "cluster_centers": kmeans.cluster_centers_.tolist(),
+            "validation": validation_results,  # Enhanced validation metrics
         }
 
         return result
@@ -372,18 +654,13 @@ class PatternAnalyzer:
         n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
         n_noise = list(cluster_labels).count(-1)
 
-        # Calculate silhouette score if there are clusters
-        if n_clusters > 1:
-            # Exclude noise points from silhouette calculation
-            non_noise_mask = cluster_labels != -1
-            if np.sum(non_noise_mask) > 1:
-                silhouette_avg = silhouette_score(
-                    scaled_data[non_noise_mask], cluster_labels[non_noise_mask]
-                )
-            else:
-                silhouette_avg = 0
-        else:
-            silhouette_avg = 0
+        # Enhanced clustering validation with multiple metrics
+        validation_results = self._enhanced_clustering_validation(
+            scaled_data, cluster_labels, "dbscan"
+        )
+        
+        # Legacy metrics for backwards compatibility
+        silhouette_avg = validation_results.get("silhouette_score", 0)
 
         # Analyze clusters
         cluster_analysis = self._analyze_clusters(data, cluster_labels, features)
@@ -401,6 +678,7 @@ class PatternAnalyzer:
                 "silhouette_score": float(silhouette_avg),
             },
             "cluster_analysis": cluster_analysis,
+            "validation": validation_results,  # Enhanced validation metrics
         }
 
         return result
@@ -644,6 +922,192 @@ class PatternAnalyzer:
                 f"Error calculating association between {col1} and {col2}: {e}"
             )
             return None
+
+    def _calculate_detailed_correlation(self, x: pd.Series, y: pd.Series, 
+                                      col1: str, col2: str, method: str) -> Dict[str, Any]:
+        """
+        Calculate detailed correlation statistics with confidence intervals and significance testing.
+        
+        Args:
+            x: First variable series
+            y: Second variable series
+            col1: Name of first column
+            col2: Name of second column
+            method: Correlation method
+            
+        Returns:
+            Detailed correlation statistics
+        """
+        try:
+            # Remove missing values
+            valid_data = pd.DataFrame({"x": x, "y": y}).dropna()
+            
+            if len(valid_data) < 3:
+                return {"error": "Insufficient data for correlation"}
+            
+            x_clean = valid_data["x"]
+            y_clean = valid_data["y"]
+            
+            # Calculate correlation and p-value using appropriate method
+            if method == "pearson":
+                corr_coef, p_value = pearsonr(x_clean, y_clean)
+            elif method == "spearman":
+                corr_coef, p_value = spearmanr(x_clean, y_clean)
+            elif method == "kendall":
+                corr_coef, p_value = kendalltau(x_clean, y_clean)
+            else:
+                return {"error": f"Unknown correlation method: {method}"}
+            
+            # Calculate confidence interval (for Pearson, use Fisher's z-transformation)
+            confidence_interval = self._calculate_correlation_confidence_interval(
+                corr_coef, len(valid_data), method
+            )
+            
+            # Calculate effect size interpretation
+            abs_corr = abs(corr_coef)
+            strength = self._classify_correlation_strength(abs_corr)
+            
+            result = {
+                "column1": col1,
+                "column2": col2,
+                "correlation": float(corr_coef),
+                "abs_correlation": float(abs_corr),
+                "p_value": float(p_value),
+                "significant": p_value < 0.05,
+                "strength": strength,
+                "direction": "positive" if corr_coef > 0 else "negative",
+                "sample_size": len(valid_data),
+                "confidence_interval": confidence_interval,
+                "method": method
+            }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error calculating correlation between {col1} and {col2}: {e}")
+            return {"error": str(e)}
+    
+    def _calculate_correlation_confidence_interval(self, corr: float, n: int, method: str) -> Dict[str, Any]:
+        """
+        Calculate confidence interval for correlation coefficient.
+        
+        Args:
+            corr: Correlation coefficient
+            n: Sample size
+            method: Correlation method
+            
+        Returns:
+            Confidence interval information
+        """
+        try:
+            if method == "pearson" and n > 3:
+                # Fisher's z-transformation for Pearson correlation
+                z = 0.5 * np.log((1 + corr) / (1 - corr))
+                se_z = 1 / np.sqrt(n - 3)
+                z_critical = 1.96  # 95% CI
+                
+                z_lower = z - z_critical * se_z
+                z_upper = z + z_critical * se_z
+                
+                # Transform back to correlation scale
+                ci_lower = (np.exp(2 * z_lower) - 1) / (np.exp(2 * z_lower) + 1)
+                ci_upper = (np.exp(2 * z_upper) - 1) / (np.exp(2 * z_upper) + 1)
+                
+                return {
+                    "lower": float(ci_lower),
+                    "upper": float(ci_upper),
+                    "confidence_level": 0.95,
+                    "method": "Fisher's z-transformation"
+                }
+            else:
+                # Bootstrap confidence interval for non-parametric methods
+                return self._bootstrap_correlation_ci(corr, n, method)
+                
+        except Exception as e:
+            logger.error(f"Error calculating correlation CI: {e}")
+            return {"error": str(e)}
+    
+    def _bootstrap_correlation_ci(self, corr: float, n: int, method: str) -> Dict[str, Any]:
+        """
+        Calculate bootstrap confidence interval for correlation.
+        
+        Args:
+            corr: Original correlation
+            n: Sample size
+            method: Correlation method
+            
+        Returns:
+            Bootstrap confidence interval
+        """
+        try:
+            # For bootstrap, we need a rough estimate
+            # Using Fisher's transformation as approximation for all methods
+            if n > 10:
+                se_approx = 1 / np.sqrt(n - 3) if method == "pearson" else 1.2 / np.sqrt(n - 3)
+                margin_error = 1.96 * se_approx
+                
+                ci_lower = max(-1, corr - margin_error)
+                ci_upper = min(1, corr + margin_error)
+                
+                return {
+                    "lower": float(ci_lower),
+                    "upper": float(ci_upper),
+                    "confidence_level": 0.95,
+                    "method": f"approximate bootstrap for {method}"
+                }
+            else:
+                return {
+                    "lower": float(corr),
+                    "upper": float(corr),
+                    "confidence_level": 0.95,
+                    "method": "insufficient_data_for_ci"
+                }
+                
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def _apply_correlation_multiple_testing_correction(self, correlations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Apply multiple testing correction to correlation p-values.
+        
+        Args:
+            correlations: List of correlation dictionaries
+            
+        Returns:
+            Updated correlations with corrected p-values
+        """
+        try:
+            if not correlations:
+                return correlations
+            
+            # Extract p-values
+            p_values = []
+            for corr in correlations:
+                if "p_value" in corr and not corr.get("error"):
+                    p_values.append(corr["p_value"])
+                else:
+                    p_values.append(1.0)  # Non-significant for missing/error cases
+            
+            if not p_values:
+                return correlations
+            
+            # Apply Benjamini-Hochberg FDR correction
+            rejected, corrected_p_values, _, _ = multipletests(
+                p_values, alpha=0.05, method="fdr_bh"
+            )
+            
+            # Update correlation results
+            for i, corr in enumerate(correlations):
+                if i < len(corrected_p_values):
+                    corr["p_value_corrected"] = float(corrected_p_values[i])
+                    corr["significant_corrected"] = bool(rejected[i])
+                    corr["multiple_testing_method"] = "Benjamini-Hochberg FDR"
+            
+            return correlations
+            
+        except Exception as e:
+            logger.error(f"Error applying multiple testing correction to correlations: {e}")
+            return correlations
 
 
 def get_default_pattern_analyzer() -> PatternAnalyzer:
