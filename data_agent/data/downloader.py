@@ -4,10 +4,22 @@ Dataset download functionality for Google Drive and other sources.
 
 import re
 import requests
+import os
+import io
 from pathlib import Path
 from typing import Optional
 from tqdm import tqdm
 import logging
+
+try:
+    from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    GOOGLE_API_AVAILABLE = True
+except ImportError:
+    GOOGLE_API_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +27,14 @@ logger = logging.getLogger(__name__)
 class DatasetDownloader:
     """Downloads and manages datasets from various sources."""
 
+    # OAuth 2.0 scopes for Google Drive
+    SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
+
     def __init__(self, data_dir: str = "./data"):
         """Initialize downloader with data directory."""
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(exist_ok=True)
+        self._drive_service = None
 
     def extract_google_drive_id(self, url: str) -> str:
         """Extract file ID from Google Drive URL."""
@@ -35,35 +51,121 @@ class DatasetDownloader:
 
         raise ValueError(f"Could not extract Google Drive ID from URL: {url}")
 
-    def _try_download_method(
-        self,
-        session: requests.Session,
-        method_name: str,
-        url: str,
-        headers: dict = None,
-    ) -> requests.Response:
-        """Try a specific download method."""
-        logger.info(f"Trying download method: {method_name}")
-        response = session.get(url, stream=True, headers=headers or {})
+    def _get_google_drive_service(self):
+        """Get authenticated Google Drive service."""
+        if not GOOGLE_API_AVAILABLE:
+            raise ImportError(
+                "Google API client libraries not installed. "
+                "Run: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib"
+            )
 
-        # Check if we got HTML (virus scan warning or error page)
-        content_type = response.headers.get("content-type", "").lower()
-        if "text/html" in content_type:
-            logger.debug(f"Method {method_name} returned HTML content")
-            return None
+        if self._drive_service:
+            return self._drive_service
 
-        if response.status_code == 200:
-            logger.info(f"Method {method_name} succeeded")
-            return response
+        creds = None
+        token_path = self.data_dir / "token.json"
+        
+        # Try to get credentials path from environment variable first
+        credentials_path_env = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+        if credentials_path_env:
+            credentials_path = Path(credentials_path_env)
+        else:
+            credentials_path = self.data_dir / "credentials.json"
 
-        logger.debug(f"Method {method_name} failed with status {response.status_code}")
-        return None
+        # Load existing credentials if available
+        if token_path.exists():
+            creds = Credentials.from_authorized_user_file(str(token_path), self.SCOPES)
+
+        # If there are no (valid) credentials available, let the user log in.
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                except Exception as e:
+                    logger.warning(f"Token refresh failed: {e}")
+                    creds = None
+
+            if not creds:
+                if not credentials_path.exists():
+                    # Check if we have an API key for limited access
+                    api_key = os.getenv('GOOGLE_DRIVE_API_KEY')
+                    if api_key:
+                        logger.info("Using Google Drive API key for limited access")
+                        self._drive_service = build('drive', 'v3', developerKey=api_key)
+                        return self._drive_service
+                    else:
+                        logger.warning(
+                            f"Google API credentials not found at {credentials_path}. "
+                            "Falling back to unauthenticated access."
+                        )
+                        # Try without authentication (public files only)
+                        self._drive_service = build('drive', 'v3', developerKey=None)
+                        return self._drive_service
+
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    str(credentials_path), self.SCOPES
+                )
+                creds = flow.run_local_server(port=0)
+
+            # Save the credentials for the next run
+            with open(token_path, 'w') as token:
+                token.write(creds.to_json())
+
+        self._drive_service = build('drive', 'v3', credentials=creds)
+        return self._drive_service
+
+    def _download_with_google_api(self, file_id: str, file_path: Path) -> bool:
+        """Download file using Google Drive API."""
+        try:
+            service = self._get_google_drive_service()
+            
+            # Get file metadata
+            file_metadata = service.files().get(fileId=file_id).execute()
+            logger.info(f"Downloading: {file_metadata.get('name', 'Unknown')}")
+            
+            # Request the file content
+            request = service.files().get_media(fileId=file_id)
+            
+            # Use BytesIO to handle the download in memory first
+            file_content = io.BytesIO()
+            
+            # Download in chunks
+            from googleapiclient.http import MediaIoBaseDownload
+            downloader = MediaIoBaseDownload(file_content, request)
+            
+            done = False
+            with tqdm(desc="Downloading", unit="B", unit_scale=True) as pbar:
+                while done is False:
+                    status, done = downloader.next_chunk()
+                    if status:
+                        pbar.total = status.total_size
+                        pbar.n = status.resumable_progress
+                        pbar.refresh()
+            
+            # Write to file
+            with open(file_path, 'wb') as f:
+                f.write(file_content.getvalue())
+                
+            logger.info(f"Successfully downloaded using Google Drive API: {file_path}")
+            return True
+            
+        except HttpError as error:
+            if error.resp.status == 404:
+                logger.error(f"File not found: {file_id}")
+            elif error.resp.status == 403:
+                logger.error(f"Permission denied for file: {file_id}")
+            else:
+                logger.error(f"Google API error: {error}")
+            return False
+        except Exception as e:
+            logger.error(f"Error downloading with Google API: {e}")
+            return False
 
     def download_from_google_drive(
         self, url: str, filename: Optional[str] = None, force_download: bool = False
     ) -> Path:
         """
-        Download file from Google Drive using multiple fallback methods.
+        Download file from Google Drive using the official Google Drive API.
 
         Args:
             url: Google Drive URL
@@ -89,109 +191,54 @@ class DatasetDownloader:
         logger.info(f"Downloading dataset from Google Drive to {file_path}")
 
         try:
-            session = requests.Session()
-
-            # Multiple download methods to try
-            download_methods = [
-                # Method 1: Direct download with confirm=t
-                {
-                    "name": "direct_confirm",
-                    "url": f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t",
-                    "headers": {
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                    },
-                },
-                # Method 2: Alternative direct download
-                {
-                    "name": "alt_direct",
-                    "url": f"https://drive.google.com/u/0/uc?id={file_id}&export=download&confirm=t&uuid=12345",
-                    "headers": {
-                        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-                    },
-                },
-                # Method 3: Traditional method with token parsing
-                {
-                    "name": "token_method",
-                    "url": f"https://drive.google.com/uc?export=download&id={file_id}",
-                    "headers": {},
-                },
-                # Method 4: Mobile user agent
-                {
-                    "name": "mobile_agent",
-                    "url": f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t",
-                    "headers": {
-                        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15"
-                    },
-                },
-            ]
-
-            response = None
-
-            # Try each method
-            for method in download_methods:
-                try:
-                    test_response = self._try_download_method(
-                        session, method["name"], method["url"], method["headers"]
+            # Try Google Drive API first (most reliable)
+            if GOOGLE_API_AVAILABLE:
+                logger.info("Attempting download with Google Drive API...")
+                if self._download_with_google_api(file_id, file_path):
+                    # Verify downloaded file
+                    actual_size = file_path.stat().st_size
+                    logger.info(
+                        f"Successfully downloaded dataset to {file_path} ({actual_size:,} bytes)"
                     )
+                    return file_path
+                else:
+                    logger.warning("Google Drive API failed, trying direct download as fallback...")
+            else:
+                logger.info("Google API libraries not available, using direct download...")
 
-                    if test_response:
-                        response = test_response
-                        break
+            # Fallback to simple direct download (only as backup)
+            return self._fallback_direct_download(file_id, file_path)
 
-                except Exception as e:
-                    logger.debug(f"Method {method['name']} failed: {e}")
-                    continue
+        except Exception as e:
+            logger.error(f"Error downloading dataset: {e}")
+            # Clean up partial download
+            if file_path.exists():
+                file_path.unlink()
+            raise
 
-            # If direct methods failed, try token extraction method
-            if not response:
-                logger.info("Direct methods failed, trying token extraction...")
-                initial_response = session.get(
-                    f"https://drive.google.com/uc?export=download&id={file_id}"
-                )
-
-                if (
-                    initial_response.status_code == 200
-                    and "text/html" in initial_response.headers.get("content-type", "")
-                ):
-                    html_content = initial_response.text
-
-                    # Look for various token patterns
-                    token_patterns = [
-                        r'confirm=([^&"\']+)',
-                        r'"confirm":"([^"]+)"',
-                        r'confirm%3D([^&"\']+)',
-                        r'uuid=([^&"\']+)',
-                    ]
-
-                    for pattern in token_patterns:
-                        match = re.search(pattern, html_content)
-                        if match:
-                            token = match.group(1)
-                            logger.info(
-                                f"Found token with pattern {pattern}: {token[:10]}..."
-                            )
-
-                            confirmed_url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm={token}"
-                            response = self._try_download_method(
-                                session, "token_confirmed", confirmed_url
-                            )
-                            if response:
-                                break
-
-            if not response:
+    def _fallback_direct_download(self, file_id: str, file_path: Path) -> Path:
+        """Simple fallback download method for public files."""
+        try:
+            # Try simple direct download URL (works for public files)
+            download_url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t"
+            
+            logger.info("Attempting direct download...")
+            response = requests.get(download_url, stream=True)
+            
+            # Check if we got HTML (usually means the file requires authentication)
+            content_type = response.headers.get("content-type", "").lower()
+            if "text/html" in content_type:
                 raise ValueError(
-                    "All download methods failed - unable to bypass Google Drive restrictions"
+                    "Received HTML response - file may require authentication or may not be public"
                 )
-
+            
+            if response.status_code != 200:
+                raise ValueError(f"Download failed with status code: {response.status_code}")
+            
             # Get file size for progress bar
             total_size = int(response.headers.get("content-length", 0))
-            if total_size > 0:
-                logger.info(f"Downloading {total_size:,} bytes...")
-            else:
-                logger.info("Downloading (size unknown)...")
-
+            
             # Download with progress bar
-            downloaded_size = 0
             with open(file_path, "wb") as f:
                 if total_size > 0:
                     with tqdm(
@@ -200,7 +247,6 @@ class DatasetDownloader:
                         for chunk in response.iter_content(chunk_size=8192):
                             if chunk:
                                 f.write(chunk)
-                                downloaded_size += len(chunk)
                                 pbar.update(len(chunk))
                 else:
                     # No content-length header, show basic progress
@@ -208,14 +254,12 @@ class DatasetDownloader:
                         for chunk in response.iter_content(chunk_size=8192):
                             if chunk:
                                 f.write(chunk)
-                                downloaded_size += len(chunk)
                                 pbar.update(len(chunk))
-
-            # Verify the downloaded file
+            
+            # Basic verification
             actual_size = file_path.stat().st_size
             if actual_size < 1000:
-                logger.error(f"Downloaded file is too small ({actual_size} bytes)")
-                # Check if it's HTML
+                # Check if it's HTML error page
                 try:
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                         first_content = f.read(500)
@@ -223,31 +267,20 @@ class DatasetDownloader:
                             tag in first_content.lower()
                             for tag in ["<html", "<!doctype", "<head", "<body"]
                         ):
-                            logger.error(
-                                "Downloaded file appears to be HTML, not the expected file"
-                            )
                             file_path.unlink()
                             raise ValueError(
-                                "Downloaded HTML page instead of file - the file may be too large for direct download or requires different permissions"
+                                "Downloaded HTML page instead of file. "
+                                "The file may require authentication or manual download."
                             )
                 except Exception:
-                    pass  # If we can't read as text, it's probably binary (good)
-
-            logger.info(
-                f"Successfully downloaded dataset to {file_path} ({actual_size:,} bytes)"
-            )
+                    pass  # If we can't read as text, it's probably binary
+            
+            logger.info(f"Direct download completed: {actual_size:,} bytes")
             return file_path
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error downloading dataset: {e}")
-            # Clean up partial download
-            if file_path.exists():
-                file_path.unlink()
-            raise
-
+            
         except Exception as e:
-            logger.error(f"Unexpected error during download: {e}")
-            # Clean up partial download
+            logger.error(f"Direct download failed: {e}")
+            # Clean up
             if file_path.exists():
                 file_path.unlink()
             raise
@@ -287,25 +320,40 @@ class DatasetDownloader:
             raise NotImplementedError("Only Google Drive URLs are currently supported")
 
     def _show_manual_download_instructions(self, url: str, filename: str):
-        """Show manual download instructions when automated methods fail."""
+        """Show manual download and Google API setup instructions when automated methods fail."""
         file_id = self.extract_google_drive_id(url)
         data_dir = self.data_dir.absolute()
 
         print(f"\n{'='*60}")
-        print("MANUAL DOWNLOAD REQUIRED")
+        print("DOWNLOAD FAILED - SETUP REQUIRED")
         print(f"{'='*60}")
-        print("The automated download failed. Please manually download the file:")
-        print("\n1. Open this URL in your browser:")
+        print("The Google Drive download failed. Here are your options:")
+        
+        print("\n🔧 OPTION 1: Set up Google Drive API (RECOMMENDED)")
+        print("This provides the most reliable downloads:")
+        print("1. Go to: https://console.developers.google.com/")
+        print("2. Create a new project or select existing one")
+        print("3. Enable the Google Drive API")
+        print("4. Create credentials (OAuth 2.0 Client ID for Desktop app)")
+        print("5. Download the credentials JSON file")
+        print(f"6. Save it as: {data_dir}/credentials.json")
+        print("7. Run the application again - it will guide you through OAuth")
+        
+        print("\n📁 OPTION 2: Manual download")
+        print("If you prefer to download manually:")
+        print("1. Open this URL in your browser:")
         print(f"   https://drive.google.com/file/d/{file_id}/view")
-        print("\n2. Click 'Download' button")
+        print("2. Click 'Download' button")
         print(f"3. Save the file as: {filename}")
         print(f"4. Move the file to: {data_dir}/")
-        print("\nAlternatively, try these direct download links:")
+        
+        print("\n🔗 OPTION 3: Try direct links")
+        print("These may work for public files:")
         print(f"   • https://drive.google.com/uc?export=download&id={file_id}")
         print(f"   • https://drive.google.com/u/0/uc?id={file_id}&export=download")
-        print("\nOnce downloaded, place the file at:")
-        print(f"   {data_dir}/{filename}")
-        print("\nThen restart the application.")
+        
+        print(f"\n📂 Target location: {data_dir}/{filename}")
+        print("Once the file is in place, restart the application.")
         print(f"{'='*60}\n")
 
     def get_dataset_path(self, filename: str = "dataset.parquet") -> Path:
