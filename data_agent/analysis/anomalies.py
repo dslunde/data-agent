@@ -49,7 +49,7 @@ class AnomalyDetector:
             methods = ["iqr", "zscore", "isolation_forest"]
 
         if columns is None:
-            columns = df.select_dtypes(include=[np.number]).columns.tolist()
+            columns = df.select_dtypes(include=[np.number], exclude=['datetime64[ns]', 'datetime64']).columns.tolist()
 
         # Validate methods upfront
         valid_methods = ["iqr", "zscore", "isolation_forest", "elliptic_envelope"]
@@ -142,7 +142,7 @@ class AnomalyDetector:
         """
         try:
             if features is None:
-                features = df.select_dtypes(include=[np.number]).columns.tolist()
+                features = df.select_dtypes(include=[np.number], exclude=['datetime64[ns]', 'datetime64']).columns.tolist()
 
             # Validate features
             features = [col for col in features if col in df.columns]

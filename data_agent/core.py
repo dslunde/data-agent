@@ -352,15 +352,18 @@ class DataAgentCore:
                         logger.info("Using cached analysis result")
                     return cached_result
 
+            # Apply filters to get the target dataset for analysis
+            filtered_df = self._apply_filters(intent)
+
             # Execute analysis
             if method == AnalysisMethod.DESCRIBE_DATASET:
-                result = self.statistical_analyzer.describe_dataset(self.dataset)
+                result = self.statistical_analyzer.describe_dataset(filtered_df)
 
             elif method == AnalysisMethod.COUNT_VALUES:
                 column = intent.columns[0] if intent.columns else None
                 if column:
                     result = self.statistical_analyzer.count_analysis(
-                        self.dataset, column
+                        filtered_df, column
                     )
                 else:
                     result = {"error": "No column specified for count analysis"}
@@ -370,7 +373,7 @@ class DataAgentCore:
                     group_by = intent.columns[0]
                     agg_column = intent.columns[1]
                     result = self.statistical_analyzer.aggregate_data(
-                        self.dataset, group_by, agg_column
+                        filtered_df, group_by, agg_column
                     )
                 else:
                     result = {"error": "Need at least 2 columns for aggregation"}
@@ -385,12 +388,12 @@ class DataAgentCore:
 
             elif method == AnalysisMethod.CORRELATION_ANALYSIS:
                 result = self.pattern_analyzer.correlation_analysis(
-                    self.dataset, method=intent.parameters.get("method", "pearson")
+                    filtered_df, method=intent.parameters.get("method", "pearson")
                 )
 
             elif method == AnalysisMethod.CLUSTERING_ANALYSIS:
                 result = self.pattern_analyzer.clustering_analysis(
-                    self.dataset,
+                    filtered_df,
                     features=intent.columns,
                     algorithm=intent.parameters.get("algorithm", "kmeans"),
                     eps=intent.parameters.get("eps", 0.5),
@@ -398,18 +401,18 @@ class DataAgentCore:
                 )
 
             elif method == AnalysisMethod.PATTERN_RECOGNITION:
-                result = self.pattern_analyzer.correlation_analysis(self.dataset)
+                result = self.pattern_analyzer.correlation_analysis(filtered_df)
 
             elif method == AnalysisMethod.OUTLIER_DETECTION:
                 result = self.anomaly_detector.detect_outliers(
-                    self.dataset, 
+                    filtered_df,
                     columns=intent.columns or None,
                     contamination=intent.parameters.get("contamination", 0.1)
                 )
 
             elif method == AnalysisMethod.ANOMALY_DETECTION:
                 result = self.anomaly_detector.detect_multivariate_anomalies(
-                    self.dataset, 
+                    filtered_df,
                     features=intent.columns or None,
                     contamination=intent.parameters.get("contamination", 0.1)
                 )
@@ -418,32 +421,25 @@ class DataAgentCore:
                 if len(intent.columns) >= 2:
                     date_col = intent.columns[0]
                     value_col = intent.columns[1]
-                    result = self.statistical_analyzer.trend_analysis(
-                        self.dataset, date_col, value_col
-                    )
-                else:
-                    # Try to find date column automatically
-                    date_cols = self.dataset.select_dtypes(
-                        include=["datetime64"]
-                    ).columns
-                    numeric_cols = self.dataset.select_dtypes(
-                        include=["number"]
-                    ).columns
-
-                    if len(date_cols) > 0 and len(numeric_cols) > 0:
-                        result = self.statistical_analyzer.trend_analysis(
-                            self.dataset, date_cols[0], numeric_cols[0]
-                        )
+                    
+                    # Validate columns before analysis
+                    if date_col not in filtered_df.columns:
+                        result = {"error": f"Date column '{date_col}' not found in dataset"}
+                    elif value_col not in filtered_df.columns:
+                        result = {"error": f"Value column '{value_col}' not found in dataset"}
                     else:
-                        result = {
-                            "error": "Could not find suitable columns for trend analysis"
-                        }
+                        result = self.statistical_analyzer.trend_analysis(
+                            filtered_df, date_col, value_col
+                        )
+                else:
+                    # Try to find suitable columns automatically
+                    result = self._find_and_analyze_trends()
 
             elif method == AnalysisMethod.TIME_SERIES_PATTERNS:
-                date_cols = self.dataset.select_dtypes(include=["datetime64"]).columns
+                date_cols = filtered_df.select_dtypes(include=["datetime64"]).columns
                 if len(date_cols) > 0:
                     result = self.pattern_analyzer.time_series_patterns(
-                        self.dataset, date_cols[0], intent.columns
+                        filtered_df, date_cols[0], intent.columns
                     )
                 else:
                     result = {
@@ -453,27 +449,27 @@ class DataAgentCore:
             elif method == AnalysisMethod.GROUP_COMPARISON:
                 if intent.columns:
                     result = self.statistical_analyzer.group_analysis(
-                        self.dataset, intent.columns[0]
+                        filtered_df, intent.columns[0]
                     )
                 else:
                     result = {"error": "No grouping column specified"}
 
             elif method == AnalysisMethod.DATA_QUALITY_CHECK:
-                result = self.quality_assessor.assess_quality(self.dataset)
+                result = self.quality_assessor.assess_quality(filtered_df)
 
             # Causal analysis methods
             elif method == AnalysisMethod.CAUSAL_DRIVERS:
-                result = self.causal_analyzer.analyze_pipeline_capacity_drivers(self.dataset)
+                result = self.causal_analyzer.analyze_pipeline_capacity_drivers(filtered_df)
 
             elif method == AnalysisMethod.BOTTLENECK_ANALYSIS:
-                result = self.causal_analyzer.detect_infrastructure_bottlenecks(self.dataset)
+                result = self.causal_analyzer.detect_infrastructure_bottlenecks(filtered_df)
 
             elif method == AnalysisMethod.SEASONAL_PATTERNS:
-                result = self.causal_analyzer.analyze_seasonal_patterns(self.dataset)
+                result = self.causal_analyzer.analyze_seasonal_patterns(filtered_df)
 
             else:
                 # Fallback to basic description
-                result = self.statistical_analyzer.describe_dataset(self.dataset)
+                result = self.statistical_analyzer.describe_dataset(filtered_df)
 
             # Cache result if caching enabled
             if self.cache and "error" not in result:
@@ -485,6 +481,46 @@ class DataAgentCore:
         except Exception as e:
             logger.error(f"Error executing analysis {method.value}: {e}")
             return {"error": str(e)}
+
+    def _apply_filters(self, intent) -> pd.DataFrame:
+        """Apply filters from the intent to the dataset."""
+        if not intent.filters:
+            return self.dataset
+
+        filtered_df = self.dataset.copy()
+        for f in intent.filters:
+            column = f.get("column")
+            operator = f.get("operator")
+            value = f.get("value")
+
+            if column not in filtered_df.columns:
+                logger.warning(f"Filter column '{column}' not found in dataset. Skipping filter.")
+                continue
+
+            try:
+                if operator == "equals":
+                    filtered_df = filtered_df[filtered_df[column] == value]
+                elif operator == "not_equals":
+                    filtered_df = filtered_df[filtered_df[column] != value]
+                elif operator == "greater_than":
+                    filtered_df = filtered_df[filtered_df[column] > value]
+                elif operator == "less_than":
+                    filtered_df = filtered_df[filtered_df[column] < value]
+                elif operator == "greater_equal":
+                    filtered_df = filtered_df[filtered_df[column] >= value]
+                elif operator == "less_equal":
+                    filtered_df = filtered_df[filtered_df[column] <= value]
+                elif operator == "contains" and filtered_df[column].dtype == "object":
+                    filtered_df = filtered_df[filtered_df[column].str.contains(str(value), na=False)]
+                elif operator == "isin" and isinstance(value, list):
+                    filtered_df = filtered_df[filtered_df[column].isin(value)]
+            except Exception as e:
+                logger.error(f"Failed to apply filter {f}: {e}")
+
+        if self.verbose:
+            logger.info(f"Applied filters. Original size: {len(self.dataset)}, Filtered size: {len(filtered_df)}")
+
+        return filtered_df
 
     def _generate_cache_key(self, intent) -> str:
         """Generate robust cache key based on dataset schema and content hash."""
@@ -672,6 +708,51 @@ class DataAgentCore:
         if self.cache:
             self.cache.clear()
             logger.info("Analysis cache cleared")
+
+    def _find_and_analyze_trends(self):
+        """Find suitable columns for trend analysis and perform the analysis."""
+        # First, try to find actual datetime columns
+        date_cols = self.dataset.select_dtypes(include=["datetime64"]).columns
+        
+        # Also look for columns that might be convertible to datetime
+        potential_date_cols = []
+        for col in self.dataset.columns:
+            if col not in date_cols:
+                # Skip categorical columns and those that are clearly not dates
+                if pd.api.types.is_categorical_dtype(self.dataset[col]):
+                    continue
+                    
+                # Try a small sample to see if it converts to datetime
+                try:
+                    sample = self.dataset[col].dropna().head(100)
+                    if len(sample) > 0:
+                        converted = pd.to_datetime(sample, errors="coerce")
+                        # If more than 50% of values convert successfully, consider it a date column
+                        if converted.notna().sum() / len(sample) > 0.5:
+                            potential_date_cols.append(col)
+                except Exception:
+                    continue
+        
+        # Combine actual and potential date columns
+        all_date_cols = list(date_cols) + potential_date_cols
+        
+        # Find numeric columns (excluding categorical)
+        numeric_cols = []
+        for col in self.dataset.select_dtypes(include=["number"]).columns:
+            if not pd.api.types.is_categorical_dtype(self.dataset[col]):
+                numeric_cols.append(col)
+        
+        if len(all_date_cols) > 0 and len(numeric_cols) > 0:
+            # Use the first suitable combination
+            return self.statistical_analyzer.trend_analysis(
+                self.dataset, all_date_cols[0], numeric_cols[0]
+            )
+        else:
+            date_info = f"Found {len(all_date_cols)} potential date columns: {all_date_cols[:3]}" if len(all_date_cols) > 0 else "No date columns found"
+            numeric_info = f"Found {len(numeric_cols)} numeric columns: {numeric_cols[:3]}" if len(numeric_cols) > 0 else "No numeric columns found"
+            return {
+                "error": f"Could not find suitable columns for trend analysis. {date_info}. {numeric_info}."
+            }
 
 
 def create_data_agent_core(**kwargs) -> DataAgentCore:

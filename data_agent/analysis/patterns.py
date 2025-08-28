@@ -296,6 +296,30 @@ class PatternAnalyzer:
             logger.error(f"Error applying multiple testing correction to correlations: {e}")
             return correlations
 
+    def _calculate_categorical_association(self, data1: pd.Series, data2: pd.Series) -> Dict[str, Any]:
+        """Calculate association for two categorical variables using Chi-square test."""
+        try:
+            contingency_table = pd.crosstab(data1, data2)
+            chi2, p, dof, expected = stats.chi2_contingency(contingency_table)
+            
+            # Calculate Cramér's V for effect size
+            n = contingency_table.sum().sum()
+            phi2 = chi2 / n
+            r, k = contingency_table.shape
+            cramers_v = np.sqrt(phi2 / min(k-1, r-1))
+
+            return {
+                "test": "chi_square",
+                "chi2_statistic": float(chi2),
+                "p_value": float(p),
+                "degrees_of_freedom": int(dof),
+                "cramers_v": float(cramers_v),
+                "significant": p < 0.05
+            }
+        except Exception as e:
+            logger.warning(f"Could not calculate categorical association: {e}")
+            return {"error": str(e)}
+
     def correlation_analysis(
         self, df: pd.DataFrame, method: str = "pearson", min_correlation: float = 0.3
     ) -> Dict[str, Any]:
@@ -312,76 +336,62 @@ class PatternAnalyzer:
         """
         try:
             numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
 
-            if len(numeric_cols) < 2:
-                return {
-                    "error": "Need at least 2 numeric columns for correlation analysis"
-                }
+            all_associations = []
 
-            # Calculate correlation matrix
-            corr_matrix = df[numeric_cols].corr(method=method)
-
-            # Find significant correlations
-            significant_correlations = []
-            strong_correlations = []
-
-            for i, col1 in enumerate(corr_matrix.columns):
-                for col2 in corr_matrix.columns[i + 1 :]:
-                    # Get detailed correlation statistics with confidence intervals and significance
+            # Numeric vs Numeric
+            for i, col1 in enumerate(numeric_cols):
+                for col2 in numeric_cols[i + 1 :]:
                     correlation_info = self._calculate_detailed_correlation(
                         df[col1], df[col2], col1, col2, method
                     )
-                    
                     if correlation_info and not correlation_info.get("error"):
-                        abs_corr = abs(correlation_info["correlation"])
-                        
-                        if abs_corr >= min_correlation:
-                            significant_correlations.append(correlation_info)
+                        all_associations.append(correlation_info)
 
-                            if abs_corr > 0.7:
-                                strong_correlations.append(correlation_info)
+            # Categorical vs Categorical
+            for i, col1 in enumerate(categorical_cols):
+                for col2 in categorical_cols[i + 1 :]:
+                    association_info = self._calculate_categorical_association(df[col1], df[col2])
+                    if association_info and not association_info.get("error"):
+                        association_info.update({"variable1": col1, "variable2": col2})
+                        all_associations.append(association_info)
+            
+            # Numeric vs Categorical (ANOVA)
+            for num_col in numeric_cols:
+                for cat_col in categorical_cols:
+                    try:
+                        groups = [df[num_col][df[cat_col] == cat] for cat in df[cat_col].unique() if pd.notna(cat)]
+                        if len(groups) > 1:
+                            f_val, p_val = stats.f_oneway(*groups)
+                            if p_val < 0.05:
+                                all_associations.append({
+                                    "test": "anova",
+                                    "variable1": num_col,
+                                    "variable2": cat_col,
+                                    "f_statistic": float(f_val),
+                                    "p_value": float(p_val),
+                                    "significant": True
+                                })
+                    except Exception as e:
+                        logger.warning(f"ANOVA for {num_col} vs {cat_col} failed: {e}")
 
-            # Sort by absolute correlation
-            significant_correlations.sort(
-                key=lambda x: x["abs_correlation"], reverse=True
-            )
-            strong_correlations.sort(key=lambda x: x["abs_correlation"], reverse=True)
 
-            # Apply multiple testing correction
-            if significant_correlations:
-                significant_correlations = self._apply_correlation_multiple_testing_correction(
-                    significant_correlations
-                )
+            significant_correlations = [assoc for assoc in all_associations if assoc.get("significant")]
+            strong_correlations = [assoc for assoc in significant_correlations if assoc.get("abs_correlation", 0) > 0.7 or assoc.get("cramers_v", 0) > 0.5]
+
 
             result = {
                 "method": method,
                 "numeric_columns": numeric_cols,
-                "correlation_matrix": corr_matrix.round(3).to_dict(),
-                "significant_correlations": significant_correlations,
-                "strong_correlations": strong_correlations,
+                "categorical_columns": categorical_cols,
+                "significant_associations": significant_correlations,
+                "strong_associations": strong_correlations,
                 "summary": {
-                    "total_pairs": len(corr_matrix.columns)
-                    * (len(corr_matrix.columns) - 1)
-                    // 2,
+                    "total_pairs_analyzed": len(all_associations),
                     "significant_count": len(significant_correlations),
                     "strong_count": len(strong_correlations),
-                    "average_correlation": float(
-                        np.abs(
-                            corr_matrix.values[
-                                np.triu_indices_from(corr_matrix.values, k=1)
-                            ]
-                        ).mean()
-                    ),
-                    "significant_after_correction": len([
-                        corr for corr in significant_correlations 
-                        if corr.get("significant_corrected", corr.get("significant", False))
-                    ]),
                 },
-                "statistical_notes": {
-                    "multiple_testing_correction": "Benjamini-Hochberg FDR correction applied",
-                    "confidence_intervals": "Fisher's z-transformation used for Pearson correlations",
-                    "significance_threshold": "p < 0.05 after correction"
-                }
             }
 
             return result

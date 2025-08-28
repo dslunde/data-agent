@@ -320,7 +320,7 @@ class StatisticalAnalyzer:
             return {"error": str(e)}
 
     def trend_analysis(
-        self, df: pd.DataFrame, date_column: str, value_column: str, period: str = "M"
+        self, df: pd.DataFrame, date_column: str, value_column: str, period: str = "ME"
     ) -> Dict[str, Any]:
         """
         Analyze trends over time.
@@ -329,7 +329,7 @@ class StatisticalAnalyzer:
             df: DataFrame to analyze
             date_column: Date/datetime column
             value_column: Value column to analyze trends
-            period: Aggregation period ('D', 'W', 'M', 'Q', 'Y')
+            period: Aggregation period ('D', 'W', 'ME', 'QE', 'YE')
 
         Returns:
             Trend analysis results
@@ -338,21 +338,64 @@ class StatisticalAnalyzer:
             if date_column not in df.columns or value_column not in df.columns:
                 return {"error": "Required columns not found"}
 
-            # Convert to datetime if necessary
-            df_copy = df.copy()
-            if not pd.api.types.is_datetime64_any_dtype(df_copy[date_column]):
-                df_copy[date_column] = pd.to_datetime(
-                    df_copy[date_column], errors="coerce"
-                )
+            # Map deprecated frequency aliases to new ones
+            period_mapping = {
+                'M': 'ME',   # Month end
+                'Q': 'QE',   # Quarter end  
+                'Y': 'YE',   # Year end
+                'A': 'YE',   # Annual (year end)
+                'H': 'h',    # Hour
+                'T': 'min',  # Minute
+                'S': 's'     # Second
+            }
+            period = period_mapping.get(period, period)
 
+            # Validate that we have appropriate data types
+            df_copy = df.copy()
+            
+            # Check if date column can be converted to datetime
+            if not pd.api.types.is_datetime64_any_dtype(df_copy[date_column]):
+                try:
+                    # Handle categorical columns explicitly
+                    if pd.api.types.is_categorical_dtype(df_copy[date_column]):
+                        # Convert categorical to regular series first to avoid CategoricalIndex issues
+                        df_copy[date_column] = df_copy[date_column].astype(str)
+                    
+                    df_copy[date_column] = pd.to_datetime(
+                        df_copy[date_column], errors="coerce"
+                    )
+                except Exception as e:
+                    return {"error": f"Cannot convert '{date_column}' to datetime format: {str(e)}"}
+                    
+            # Check if we have any valid datetime values
+            if df_copy[date_column].isna().all():
+                return {"error": f"No valid datetime values found in '{date_column}' column"}
+            
+            # Check if value column is numeric
+            if not pd.api.types.is_numeric_dtype(df_copy[value_column]):
+                try:
+                    df_copy[value_column] = pd.to_numeric(df_copy[value_column], errors="coerce")
+                except Exception:
+                    return {"error": f"Cannot convert '{value_column}' to numeric format"}
+            
             # Remove rows with invalid dates or values
             valid_data = df_copy.dropna(subset=[date_column, value_column])
 
             if len(valid_data) == 0:
                 return {"error": "No valid data for trend analysis"}
+                
+            # Check if we have enough data points for meaningful analysis
+            if len(valid_data) < 3:
+                return {"error": "Not enough data points for trend analysis (minimum 3 required)"}
 
             # Set date as index and resample
             valid_data = valid_data.set_index(date_column)
+            
+            # Additional safety check: ensure the index is not categorical
+            if hasattr(valid_data.index, 'categories'):
+                # Force convert the index to proper datetime if it's still categorical
+                valid_data.index = pd.to_datetime(valid_data.index, errors="coerce")
+            
             resampled = (
                 valid_data[value_column]
                 .resample(period)

@@ -657,6 +657,8 @@ class CausalAnalyzer:
             "bottlenecks": [],
             "recommendations": [],
             "confidence": "medium",
+            "columns_analyzed": [],
+            "data_summary": {},
         }
 
         try:
@@ -668,12 +670,28 @@ class CausalAnalyzer:
                 return results
             
             # Look for columns that might represent infrastructure metrics
+            capacity_keywords = [
+                'capacity', 'util', 'load', 'throughput', 'pipeline', 'flow', 'rate', 'volume',
+                'demand', 'usage', 'consumption', 'quantity', 'amount', 'traffic', 'bandwidth',
+                'pressure', 'temperature', 'efficiency', 'performance', 'speed', 'power',
+                'production', 'output', 'input', 'delivery', 'supply', 'peak', 'max', 'min'
+            ]
+            
             capacity_cols = [col for col in numeric_cols if any(keyword in col.lower() 
-                           for keyword in ['capacity', 'util', 'load', 'throughput', 'pipeline'])]
+                           for keyword in capacity_keywords)]
             
             if not capacity_cols:
                 # Use all numeric columns if no infrastructure-specific ones found
-                capacity_cols = numeric_cols.tolist()[:5]  # Limit to first 5 to avoid noise
+                # But prioritize columns with higher variance (more likely to show bottlenecks)
+                col_variances = []
+                for col in numeric_cols:
+                    if df[col].std() > 0:  # Skip constant columns
+                        variance = df[col].var()
+                        col_variances.append((col, variance))
+                
+                # Sort by variance and take top columns
+                col_variances.sort(key=lambda x: x[1], reverse=True)
+                capacity_cols = [col for col, _ in col_variances[:8]]  # Take top 8 most variable columns
             
             # Calculate statistical bottlenecks for each metric
             for col in capacity_cols:
@@ -709,7 +727,7 @@ class CausalAnalyzer:
                     
                     results["bottlenecks"].append(bottleneck)
 
-            # Generate recommendations
+            # Generate recommendations and insights
             if len(results["bottlenecks"]) > 0:
                 results["recommendations"] = [
                     "Monitor metrics with high bottleneck scores for capacity constraints",
@@ -719,8 +737,30 @@ class CausalAnalyzer:
                 ]
                 results["confidence"] = "high"
             else:
-                results["recommendations"] = ["No significant bottlenecks detected in current data"]
+                # Provide insights even when no major bottlenecks found
+                results["recommendations"] = [
+                    f"Analyzed {len(capacity_cols)} metrics across {len(df)} data points",
+                    "No critical bottlenecks detected - system appears to be operating within normal parameters",
+                    "Continue monitoring capacity utilization trends for early warning signs",
+                    "Consider analyzing longer time periods or additional metrics for comprehensive assessment"
+                ]
                 results["confidence"] = "medium"
+                
+                # Add information about the metrics that were analyzed
+                high_variance_cols = [col for col, variance in col_variances[:3]] if 'col_variances' in locals() else capacity_cols[:3]
+                results["analysis_insights"] = {
+                    "highest_variance_metrics": high_variance_cols,
+                    "analysis_approach": "Statistical outlier detection using IQR method",
+                    "threshold_method": "Q3 + 1.5 * IQR for each metric"
+                }
+
+            # Add analysis metadata
+            results["columns_analyzed"] = capacity_cols
+            results["data_summary"] = {
+                "total_records": len(df),
+                "total_numeric_columns": len(numeric_cols),
+                "columns_examined": len(capacity_cols)
+            }
 
             results["summary"] = {
                 "total_metrics_analyzed": len(capacity_cols),
@@ -743,37 +783,111 @@ class CausalAnalyzer:
             "patterns": [],
             "statistical_tests": [],
             "confidence": "medium",
+            "date_column": None,
+            "value_column": None,
+            "data_summary": {},
+        }
+
+        month_names = {
+            1: "January", 2: "February", 3: "March", 4: "April",
+            5: "May", 6: "June", 7: "July", 8: "August",
+            9: "September", 10: "October", 11: "November", 12: "December",
         }
 
         try:
-            # Convert date column if needed
+            # Find date columns (look for datetime columns or columns that can be converted)
+            date_col = None
+            value_col = None
+            
+            # First, look for explicit datetime columns
+            datetime_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
+            
+            # Also look for columns that might be dates
+            potential_date_cols = []
+            for col in df.columns:
+                if any(keyword in col.lower() for keyword in ['date', 'time', 'day', 'month', 'year']):
+                    potential_date_cols.append(col)
+            
+            # Try the most specific date column first
+            date_candidates = []
             if "eff_gas_day" in df.columns:
-                if df["eff_gas_day"].dtype == "category":
-                    df = df.copy()
-                    df["eff_gas_day"] = pd.to_datetime(df["eff_gas_day"])
+                date_candidates.append("eff_gas_day")
+            date_candidates.extend(datetime_cols)
+            date_candidates.extend(potential_date_cols)
+            
+            # Try to convert and use the first valid date column
+            for candidate in date_candidates:
+                if candidate in df.columns:
+                    try:
+                        if df[candidate].dtype == "category" or not pd.api.types.is_datetime64_any_dtype(df[candidate]):
+                            test_df = df.copy()
+                            if pd.api.types.is_categorical_dtype(test_df[candidate]):
+                                test_df[candidate] = test_df[candidate].astype(str)
+                            test_df[candidate] = pd.to_datetime(test_df[candidate], errors="coerce")
+                            
+                            # Check if conversion was successful (more than 50% valid dates)
+                            valid_dates = test_df[candidate].notna().sum()
+                            if valid_dates / len(test_df) > 0.5:
+                                df = test_df
+                                date_col = candidate
+                                break
+                        else:
+                            date_col = candidate
+                            break
+                    except Exception:
+                        continue
+            
+            if date_col is None:
+                results["error"] = "No valid date column found for seasonal analysis"
+                return results
+            
+            # Find numeric columns for analysis (look for quantity, demand, volume, etc.)
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            
+            value_candidates = []
+            if "scheduled_quantity" in df.columns:
+                value_candidates.append("scheduled_quantity")
+            
+            # Look for columns that might represent values/quantities
+            for col in numeric_cols:
+                if any(keyword in col.lower() for keyword in [
+                    'quantity', 'amount', 'volume', 'demand', 'consumption', 'usage', 
+                    'flow', 'rate', 'power', 'energy', 'gas', 'production', 'delivery', 'supply'
+                ]):
+                    value_candidates.append(col)
+            
+            # If no specific candidates, use the first few numeric columns
+            if not value_candidates:
+                value_candidates = numeric_cols[:3]
+            
+            if not value_candidates:
+                results["error"] = "No numeric columns found for seasonal analysis"
+                return results
+                
+            value_col = value_candidates[0]
+            
+            # Add time components
+            df["month"] = df[date_col].dt.month
+            df["quarter"] = df[date_col].dt.quarter
+            df["year"] = df[date_col].dt.year
 
-                df["month"] = df["eff_gas_day"].dt.month
-                df["quarter"] = df["eff_gas_day"].dt.quarter
+            # Monthly analysis for non-zero values
+            active_flows = df[df[value_col] > 0] if df[value_col].min() >= 0 else df[df[value_col] != 0]
+            monthly_stats = (
+                active_flows.groupby("month")[value_col]
+                .agg(["mean", "count", "std"])
+                .round(2)
+            )
 
-                # Monthly analysis for active flows
-                active_flows = df[df["scheduled_quantity"] > 0]
-                monthly_stats = (
-                    active_flows.groupby("month")["scheduled_quantity"]
-                    .agg(["mean", "count", "std"])
-                    .round(2)
-                )
-
-                if len(monthly_stats) >= 12:  # Full year of data
-                    # Test for seasonal differences
-                    monthly_samples = []
-                    for month in range(1, 13):
-                        month_data = active_flows[active_flows["month"] == month][
-                            "scheduled_quantity"
-                        ]
-                        if len(month_data) >= 100:
-                            monthly_samples.append(
-                                month_data.sample(min(1000, len(month_data)))
-                            )
+            if len(monthly_stats) >= 12:  # Full year of data
+                # Test for seasonal differences
+                monthly_samples = []
+                for month in range(1, 13):
+                    month_data = active_flows[active_flows["month"] == month][value_col]
+                    if len(month_data) >= 30:  # Reduced threshold for more datasets
+                        monthly_samples.append(
+                            month_data.sample(min(500, len(month_data)))  # Smaller sample size
+                        )
 
                     if len(monthly_samples) >= 12:
                         # Validate ANOVA assumptions and apply appropriate test
@@ -786,21 +900,6 @@ class CausalAnalyzer:
                             # Identify peak and low months
                             peak_month = monthly_stats["mean"].idxmax()
                             low_month = monthly_stats["mean"].idxmin()
-
-                            month_names = {
-                                1: "January",
-                                2: "February",
-                                3: "March",
-                                4: "April",
-                                5: "May",
-                                6: "June",
-                                7: "July",
-                                8: "August",
-                                9: "September",
-                                10: "October",
-                                11: "November",
-                                12: "December",
-                            }
 
                             results["patterns"].append(
                                 {
@@ -871,9 +970,40 @@ class CausalAnalyzer:
                 results["confidence"] = "high"
             elif len(results["patterns"]) >= 1:
                 results["confidence"] = "medium"
+            elif len(results["statistical_tests"]) > 0:
+                results["confidence"] = "medium"
+                # Add insights even when no clear patterns found
+                results["analysis_insights"] = {
+                    "statistical_tests_performed": len(results["statistical_tests"]),
+                    "data_examined": f"{date_col} vs {value_col}" if date_col and value_col else "Date and value columns",
+                    "records_analyzed": len(active_flows) if 'active_flows' in locals() else len(df),
+                    "methodology": "ANOVA and post-hoc testing for seasonal differences",
+                    "interpretation": "No statistically significant seasonal patterns detected"
+                }
             else:
                 results["confidence"] = "low"
+                # Provide context about why no patterns were found
+                results["analysis_insights"] = {
+                    "reason": "Insufficient data for comprehensive seasonal analysis",
+                    "data_examined": f"{date_col} vs {value_col}" if date_col and value_col else "Date and value columns",
+                    "records_available": len(df),
+                    "recommendations": [
+                        "Collect data spanning at least 12 months for seasonal analysis",
+                        "Ensure sufficient sample sizes per time period",
+                        "Consider other temporal patterns (weekly, quarterly)"
+                    ]
+                }
 
+            # Add analysis metadata
+            results["date_column"] = date_col
+            results["value_column"] = value_col
+            results["data_summary"] = {
+                "total_records": len(df),
+                "records_with_values": len(active_flows),
+                "date_range_days": (df[date_col].max() - df[date_col].min()).days if date_col else 0,
+                "months_with_data": len(monthly_stats) if 'monthly_stats' in locals() else 0
+            }
+            
             # Apply multiple testing correction for seasonal analysis
             if results["statistical_tests"]:
                 results = self._apply_multiple_testing_correction(results)
