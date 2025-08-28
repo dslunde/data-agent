@@ -18,14 +18,32 @@ import click
 from typing import Optional
 import json
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler("data_agent.log"), logging.StreamHandler(sys.stdout)],
-)
-
+# Setup logging - will be configured based on verbosity
 logger = logging.getLogger(__name__)
+
+
+def configure_logging(verbose: bool, debug: bool):
+    """Configure logging levels and handlers based on verbosity."""
+    if debug:
+        level = logging.DEBUG
+    elif verbose:
+        level = logging.INFO
+    else:
+        level = logging.WARNING
+    
+    # Only log to file, not console unless debug mode
+    handlers = [logging.FileHandler("data_agent.log")]
+    
+    if debug:
+        # In debug mode, also log to console
+        handlers.append(logging.StreamHandler(sys.stdout))
+    
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=handlers,
+        force=True  # Override any existing configuration
+    )
 
 
 @click.command()
@@ -107,14 +125,8 @@ def main(
     python -m data_agent --provider openai --model gpt-4
     """
 
-    # Configure logging
-    if debug:
-        logging.getLogger().setLevel(logging.DEBUG)
-        verbose = True
-    elif verbose:
-        logging.getLogger().setLevel(logging.INFO)
-    else:
-        logging.getLogger().setLevel(logging.WARNING)
+    # Configure logging properly
+    configure_logging(verbose, debug)
 
     # Validate batch mode
     if batch_mode and not query:
@@ -206,7 +218,7 @@ async def run_data_agent(
 
         if batch_mode:
             # Run single query
-            await run_batch_query(core, single_query, output_format)
+            await run_batch_query(core, single_query, output_format, verbose)
         else:
             # Run interactive mode
             await run_interactive_mode(core, output_format, verbose)
@@ -225,67 +237,69 @@ async def load_dataset(
 ):
     """Load dataset into the core application."""
 
-    if verbose:
-        click.echo("Loading dataset...")
-
     try:
-        with click.progressbar(length=100, label="Loading dataset") as bar:
-            # Simulate progress for user feedback
-            bar.update(20)
+        if verbose:
+            with click.progressbar(length=100, label="Loading dataset") as bar:
+                # Simulate progress for user feedback
+                bar.update(20)
 
+                if data_path:
+                    # Load local file
+                    await core.load_local_dataset(data_path, sample_size)
+                    bar.update(80)
+                else:
+                    # Download dataset
+                    bar.update(40)
+                    await core.download_and_load_dataset(download_url, sample_size)
+                    bar.update(80)
+
+                bar.update(20)  # Complete
+        else:
+            # Silent loading for clean output
             if data_path:
-                # Load local file
                 await core.load_local_dataset(data_path, sample_size)
-                bar.update(80)
             else:
-                # Download dataset
-                bar.update(40)
                 await core.download_and_load_dataset(download_url, sample_size)
-                bar.update(80)
 
-            bar.update(20)  # Complete
-
-        # Show dataset info
+        # Show dataset info based on verbosity
         dataset_info = core.get_dataset_info()
 
-        click.echo("Dataset loaded successfully!")
-        click.echo(
-            f"   Shape: {dataset_info['shape'][0]:,} rows x {dataset_info['shape'][1]} columns"
-        )
-        click.echo(f"   💾 Memory: {dataset_info['memory_usage_mb']:.1f} MB")
-        click.echo(f"   Completeness: {dataset_info['completeness_score']:.1f}%")
-
         if verbose:
+            click.echo("Dataset loaded successfully!")
+            click.echo(
+                f"   Shape: {dataset_info['shape'][0]:,} rows x {dataset_info['shape'][1]} columns"
+            )
+            click.echo(f"   💾 Memory: {dataset_info['memory_usage_mb']:.1f} MB")
+            click.echo(f"   Completeness: {dataset_info['completeness_score']:.1f}%")
             click.echo(f"   Columns: {', '.join(dataset_info['columns'][:5])}")
             if len(dataset_info["columns"]) > 5:
                 click.echo(
                     f"              ... and {len(dataset_info['columns']) - 5} more"
                 )
-
-        click.echo()
+            click.echo()
+        else:
+            # Clean, minimal output
+            click.echo(f"📊 Dataset: {dataset_info['shape'][0]:,} rows x {dataset_info['shape'][1]} columns")
 
     except Exception as e:
         click.echo(f"Failed to load dataset: {e}", err=True)
         raise
 
 
-async def run_batch_query(core, query: str, output_format: str):
+async def run_batch_query(core, query: str, output_format: str, verbose: bool = False):
     """Run a single query in batch mode."""
 
-    click.echo(f"Processing query: {query}")
-
-    try:
+    if verbose:
         with click.progressbar(length=100, label="Analyzing") as bar:
             bar.update(20)
             response = await core.process_query(query)
             bar.update(80)
+    else:
+        # Clean output without progress bar
+        response = await core.process_query(query)
 
-        # Format and display response
-        format_and_display_response(response, output_format)
-
-    except Exception as e:
-        click.echo(f"Query failed: {e}", err=True)
-        raise
+    # Format and display response
+    format_and_display_response(response, output_format)
 
 
 async def run_interactive_mode(core, output_format: str, verbose: bool):
@@ -450,7 +464,25 @@ def format_and_display_response(response: dict, output_format: str):
 
     # Text format (default)
     if "error" in response:
-        click.echo(f"Error: {response['error']}")
+        # Display error with better formatting
+        error_type = response.get("error_type", "UNKNOWN_ERROR")
+        error_msg = response.get("error", "Unknown error occurred")
+        
+        click.echo(f"❌ {error_type.replace('_', ' ').title()}")
+        click.echo(f"   {error_msg}")
+        
+        # Show suggestions if available
+        suggestions = response.get("suggestions", [])
+        if suggestions:
+            click.echo("\n💡 Suggestions:")
+            for suggestion in suggestions:
+                click.echo(f"   • {suggestion}")
+        
+        # Show analysis results if available (for partial failures)
+        if "analysis_results" in response:
+            click.echo("\n📊 Raw Analysis Results:")
+            click.echo(json.dumps(response["analysis_results"], indent=2, default=str))
+        
         return
 
     # Main response

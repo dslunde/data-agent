@@ -193,7 +193,42 @@ class DataAgentCore:
 
         try:
             # Step 1: Process query to understand intent
-            intent = await self.query_processor.process_query(query)
+            try:
+                intent = await self.query_processor.process_query(query)
+            except ValueError as e:
+                logger.error(f"Query parsing error: {e}")
+                return {
+                    "error": f"Query parsing failed: {str(e)}",
+                    "error_type": "QUERY_PARSING_ERROR",
+                    "query": query,
+                    "response": "I couldn't understand your query. Please try rephrasing it more clearly or check for typos.",
+                    "suggestions": [
+                        "Make sure your query is in English",
+                        "Try asking about specific columns or metrics",
+                        "Use simpler language and avoid complex nested questions"
+                    ]
+                }
+            except ConnectionError as e:
+                logger.error(f"LLM connection error: {e}")
+                return {
+                    "error": f"LLM service unavailable: {str(e)}",
+                    "error_type": "LLM_CONNECTION_ERROR", 
+                    "query": query,
+                    "response": "I'm having trouble connecting to the language model service. Please try again later.",
+                    "suggestions": [
+                        "Check your internet connection",
+                        "Verify API keys are properly configured",
+                        "Try again in a few moments"
+                    ]
+                }
+            except Exception as e:
+                logger.error(f"Unexpected query processing error: {e}")
+                return {
+                    "error": f"Query processing failed: {str(e)}",
+                    "error_type": "QUERY_PROCESSING_ERROR",
+                    "query": query,
+                    "response": "There was an unexpected error processing your query.",
+                }
 
             if self.verbose:
                 logger.info(
@@ -201,23 +236,105 @@ class DataAgentCore:
                 )
 
             # Step 2: Execute analysis based on intent
-            analysis_results = await self._execute_analysis(intent)
+            try:
+                analysis_results = await self._execute_analysis(intent)
+                
+                # Check if analysis returned an error
+                if "error" in analysis_results:
+                    logger.warning(f"Analysis execution failed: {analysis_results['error']}")
+                    return {
+                        "error": analysis_results["error"],
+                        "error_type": "ANALYSIS_EXECUTION_ERROR",
+                        "query": query,
+                        "analysis_method": intent.analysis_method.value,
+                        "response": f"The {intent.analysis_method.value} analysis encountered an issue. This might be due to data incompatibility or missing required columns.",
+                        "suggestions": [
+                            "Try a different type of analysis",
+                            "Check if your dataset has the required columns",
+                            "Consider filtering or cleaning your data first"
+                        ]
+                    }
+                    
+            except KeyError as e:
+                logger.error(f"Missing data/column error during analysis: {e}")
+                return {
+                    "error": f"Required data not found: {str(e)}",
+                    "error_type": "DATA_MISSING_ERROR",
+                    "query": query,
+                    "analysis_method": intent.analysis_method.value,
+                    "response": f"The analysis requires data or columns that aren't available in your dataset.",
+                    "suggestions": [
+                        f"Check if column {str(e)} exists in your dataset",
+                        "Try a different analysis method",
+                        "Load a dataset with the required structure"
+                    ]
+                }
+            except MemoryError as e:
+                logger.error(f"Memory error during analysis: {e}")
+                return {
+                    "error": "Insufficient memory for analysis",
+                    "error_type": "MEMORY_ERROR",
+                    "query": query,
+                    "analysis_method": intent.analysis_method.value,
+                    "response": "The dataset is too large for this analysis. Try reducing the dataset size or using sampling.",
+                    "suggestions": [
+                        "Use the --sample-size parameter to limit dataset size",
+                        "Try a simpler analysis method",
+                        "Consider aggregating your data before analysis"
+                    ]
+                }
+            except Exception as e:
+                logger.error(f"Analysis execution error: {e}")
+                return {
+                    "error": f"Analysis failed: {str(e)}",
+                    "error_type": "ANALYSIS_ERROR",
+                    "query": query,
+                    "analysis_method": intent.analysis_method.value,
+                    "response": f"The {intent.analysis_method.value} analysis encountered an unexpected error.",
+                }
 
             # Step 3: Generate response
-            response = await self.response_generator.generate_response(
-                intent=intent,
-                analysis_results=analysis_results,
-                dataset_info=self.dataset_info,
-            )
-
-            return response
+            try:
+                response = await self.response_generator.generate_response(
+                    intent=intent,
+                    analysis_results=analysis_results,
+                    dataset_info=self.dataset_info,
+                )
+                return response
+                
+            except ConnectionError as e:
+                logger.error(f"LLM connection error during response generation: {e}")
+                return {
+                    "error": f"Response generation failed: {str(e)}",
+                    "error_type": "RESPONSE_GENERATION_ERROR",
+                    "query": query,
+                    "analysis_results": analysis_results,  # Include results so user can see raw analysis
+                    "response": "Analysis completed successfully, but I couldn't generate a natural language response.",
+                    "suggestions": [
+                        "The analysis results are available in the 'analysis_results' field",
+                        "Try the query again to get a formatted response",
+                        "Check your LLM service connection"
+                    ]
+                }
+            except Exception as e:
+                logger.error(f"Response generation error: {e}")
+                return {
+                    "error": f"Response generation failed: {str(e)}",
+                    "error_type": "RESPONSE_GENERATION_ERROR",
+                    "query": query,
+                    "analysis_results": analysis_results,  # Include results so user can see raw analysis
+                    "response": "Analysis completed, but response formatting failed.",
+                }
 
         except Exception as e:
-            logger.error(f"Error processing query: {e}")
+            # Final catch-all for truly unexpected errors
+            logger.error(f"Unexpected error in process_query: {e}", exc_info=True)
             return {
-                "error": str(e),
+                "error": f"Unexpected system error: {str(e)}",
+                "error_type": "SYSTEM_ERROR", 
                 "query": query,
-                "response": "I encountered an error while processing your query. Please try rephrasing it.",
+                "response": "An unexpected system error occurred. Please contact support if this persists.",
+                "debug_info": str(e) if self.verbose else None
             }
 
     async def _execute_analysis(self, intent) -> Dict[str, Any]:
