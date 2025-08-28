@@ -5,6 +5,7 @@ Core application integration that ties all components together.
 import logging
 import hashlib
 import json
+import numpy as np
 from typing import Optional, Dict, Any
 
 from .data.downloader import get_default_downloader
@@ -369,20 +370,125 @@ class DataAgentCore:
             return {"error": str(e)}
 
     def _generate_cache_key(self, intent) -> str:
-        """Generate cache key for analysis result."""
+        """Generate robust cache key based on dataset schema and content hash."""
         # Create a hash of filters to avoid cache invalidation on minor filtering
         filters_hash = self._hash_filters(intent.filters)
+        
+        # Generate dataset signature based on schema and content
+        dataset_signature = self._generate_dataset_signature()
         
         key_data = {
             "method": intent.analysis_method.value,
             "columns": sorted(intent.columns),
             "filters_hash": filters_hash,
             "parameters": intent.parameters,
-            # Use dataset columns and dtypes instead of shape for better caching
-            "dataset_schema": list(self.dataset.columns) + [str(dtype) for dtype in self.dataset.dtypes] if self.dataset is not None else None,
+            "dataset_signature": dataset_signature,
         }
 
         return self.cache.get_cache_key(key_data) if self.cache else ""
+
+    def _generate_dataset_signature(self) -> str:
+        """Generate a robust dataset signature based on schema and content sampling."""
+        if self.dataset is None:
+            return "no_dataset"
+        
+        try:
+            signature_components = []
+            
+            # 1. Schema signature (column names and types)
+            schema_info = {
+                "columns": list(self.dataset.columns),
+                "dtypes": [str(dtype) for dtype in self.dataset.dtypes],
+                "shape": self.dataset.shape  # Keep shape for now as it's still useful
+            }
+            schema_str = json.dumps(schema_info, sort_keys=True)
+            schema_hash = hashlib.md5(schema_str.encode()).hexdigest()[:8]
+            signature_components.append(f"schema:{schema_hash}")
+            
+            # 2. Content sample signature (hash of first/last few rows + statistical summary)
+            # This catches structural changes while being resistant to small data additions
+            content_sample = []
+            
+            # Sample from beginning, middle, and end of dataset
+            sample_size = min(10, len(self.dataset))  # Sample up to 10 rows
+            if len(self.dataset) > 0:
+                # First few rows
+                head_sample = self.dataset.head(sample_size // 3 + 1)
+                
+                # Middle rows
+                mid_idx = len(self.dataset) // 2
+                mid_start = max(0, mid_idx - sample_size // 3)
+                mid_end = min(len(self.dataset), mid_idx + sample_size // 3 + 1)
+                mid_sample = self.dataset.iloc[mid_start:mid_end]
+                
+                # Last few rows  
+                tail_sample = self.dataset.tail(sample_size // 3 + 1)
+                
+                # Combine samples and create hash
+                for sample_df in [head_sample, mid_sample, tail_sample]:
+                    if len(sample_df) > 0:
+                        # Convert to string representation for hashing
+                        sample_str = sample_df.to_string()
+                        sample_hash = hashlib.md5(sample_str.encode()).hexdigest()[:6]
+                        content_sample.append(sample_hash)
+            
+            if content_sample:
+                content_hash = hashlib.md5("_".join(content_sample).encode()).hexdigest()[:8]
+                signature_components.append(f"content:{content_hash}")
+            
+            # 3. Statistical summary signature (for numeric columns)
+            numeric_cols = self.dataset.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                # Use basic statistics that are less sensitive to small row additions
+                stats_data = {}
+                for col in numeric_cols[:5]:  # Limit to first 5 numeric columns for performance
+                    col_data = self.dataset[col].dropna()
+                    if len(col_data) > 0:
+                        # Use percentiles which are more stable than mean/std for caching
+                        percentiles = col_data.quantile([0.25, 0.5, 0.75]).round(6)
+                        stats_data[col] = {
+                            "q25": float(percentiles.iloc[0]),
+                            "q50": float(percentiles.iloc[1]), 
+                            "q75": float(percentiles.iloc[2]),
+                            "nunique": int(col_data.nunique()) if col_data.nunique() < 1000 else 1000
+                        }
+                
+                if stats_data:
+                    stats_str = json.dumps(stats_data, sort_keys=True)
+                    stats_hash = hashlib.md5(stats_str.encode()).hexdigest()[:8]
+                    signature_components.append(f"stats:{stats_hash}")
+            
+            # 4. Categorical summary signature
+            categorical_cols = self.dataset.select_dtypes(include=['object', 'category']).columns
+            if len(categorical_cols) > 0:
+                cat_data = {}
+                for col in categorical_cols[:3]:  # Limit to first 3 categorical columns
+                    unique_vals = self.dataset[col].value_counts().head(10)  # Top 10 categories
+                    cat_data[col] = {
+                        "top_categories": [str(x) for x in unique_vals.index],
+                        "counts": [int(x) for x in unique_vals.values]
+                    }
+                
+                if cat_data:
+                    cat_str = json.dumps(cat_data, sort_keys=True)
+                    cat_hash = hashlib.md5(cat_str.encode()).hexdigest()[:8]
+                    signature_components.append(f"categorical:{cat_hash}")
+            
+            # Combine all signature components
+            final_signature = "_".join(signature_components)
+            
+            # Create final hash of reasonable length
+            return hashlib.md5(final_signature.encode()).hexdigest()[:16]
+            
+        except Exception as e:
+            logger.warning(f"Error generating dataset signature: {e}")
+            # Fallback to basic schema-based signature
+            fallback_data = {
+                "columns": list(self.dataset.columns) if self.dataset is not None else [],
+                "shape": self.dataset.shape if self.dataset is not None else (0, 0)
+            }
+            fallback_str = json.dumps(fallback_data, sort_keys=True)
+            return hashlib.md5(fallback_str.encode()).hexdigest()[:16]
 
     def _hash_filters(self, filters) -> str:
         """Create a hash of filters for consistent caching."""
