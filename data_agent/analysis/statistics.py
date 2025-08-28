@@ -295,6 +295,11 @@ class StatisticalAnalyzer:
                 "group_count": grouped.ngroups,
                 "group_sizes": grouped.size().to_dict(),
                 "group_statistics": {},
+                "overview": {
+                    "total_rows": len(df),
+                    "groups_analyzed": grouped.ngroups,
+                    "total_data_points": len(df)
+                },
             }
 
             for target_col in target_columns:

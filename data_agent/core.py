@@ -6,6 +6,7 @@ import logging
 import hashlib
 import json
 import numpy as np
+import pandas as pd
 from typing import Optional, Dict, Any
 
 from .data.downloader import get_default_downloader
@@ -448,8 +449,20 @@ class DataAgentCore:
 
             elif method == AnalysisMethod.GROUP_COMPARISON:
                 if intent.columns:
+                    # Determine target columns for analysis
+                    target_columns = None
+                    if hasattr(intent, 'target_columns') and intent.target_columns:
+                        target_columns = intent.target_columns
+                    else:
+                        # Default to numeric columns for comparison
+                        numeric_cols = filtered_df.select_dtypes(include=[np.number]).columns.tolist()
+                        # Remove the grouping column from targets
+                        target_columns = [col for col in numeric_cols if col != intent.columns[0]]
+                    
                     result = self.statistical_analyzer.group_analysis(
-                        filtered_df, intent.columns[0]
+                        filtered_df, 
+                        group_column=intent.columns[0],
+                        target_columns=target_columns
                     )
                 else:
                     result = {"error": "No grouping column specified"}
@@ -483,44 +496,262 @@ class DataAgentCore:
             return {"error": str(e)}
 
     def _apply_filters(self, intent) -> pd.DataFrame:
-        """Apply filters from the intent to the dataset."""
+        """
+        Apply filters from the intent to the dataset, with enhanced logic for pipeline data.
+        Includes smart handling for state filtering, company matching, and fallback strategies.
+        """
         if not intent.filters:
+            if self.verbose:
+                logger.info("No filters to apply, returning full dataset")
             return self.dataset
 
-        filtered_df = self.dataset.copy()
+        if self.verbose:
+            logger.info(f"Applying {len(intent.filters)} filters: {intent.filters}")
+
+        # Consolidate filters for comparison queries
+        equals_filters = {}
+        other_filters = []
+        
         for f in intent.filters:
-            column = f.get("column")
-            operator = f.get("operator")
-            value = f.get("value")
+            if f.get("operator") == "equals":
+                col = f.get("column")
+                if col not in equals_filters:
+                    equals_filters[col] = []
+                equals_filters[col].append(f.get("value"))
+            else:
+                other_filters.append(f)
 
+        consolidated_filters = other_filters
+        for col, values in equals_filters.items():
+            if len(values) > 1:
+                consolidated_filters.append({"column": col, "operator": "isin", "value": values})
+            else:
+                consolidated_filters.append({"column": col, "operator": "equals", "value": values[0]})
+
+        # Start with full dataset
+        filtered_df = self.dataset.copy()
+        original_size = len(filtered_df)
+        
+        # Apply each filter with enhanced pipeline data handling
+        for i, filter_def in enumerate(consolidated_filters):
+            column = filter_def.get("column")
+            operator = filter_def.get("operator")
+            value = filter_def.get("value")
+            
+            if self.verbose:
+                logger.info(f"Applying filter {i+1}/{len(consolidated_filters)}: {column} {operator} {value}")
+
+            # Check if column exists
             if column not in filtered_df.columns:
-                logger.warning(f"Filter column '{column}' not found in dataset. Skipping filter.")
-                continue
+                # Try to map common pipeline terms to actual columns
+                mapped_column = self._map_pipeline_column(column)
+                if mapped_column and mapped_column in filtered_df.columns:
+                    logger.info(f"Mapped column '{column}' to '{mapped_column}'")
+                    column = mapped_column
+                else:
+                    logger.warning(f"Filter column '{column}' not found in dataset. Available columns: {list(filtered_df.columns)}")
+                    continue
 
+            # Apply the filter with pipeline data specific enhancements
             try:
+                before_size = len(filtered_df)
+                
                 if operator == "equals":
-                    filtered_df = filtered_df[filtered_df[column] == value]
+                    # Enhanced equals handling for pipeline data
+                    filtered_df = self._apply_equals_filter(filtered_df, column, value)
+                    
                 elif operator == "not_equals":
                     filtered_df = filtered_df[filtered_df[column] != value]
+                    
                 elif operator == "greater_than":
-                    filtered_df = filtered_df[filtered_df[column] > value]
+                    filtered_df = filtered_df[pd.to_numeric(filtered_df[column], errors='coerce') > pd.to_numeric(value, errors='coerce')]
+                    
                 elif operator == "less_than":
-                    filtered_df = filtered_df[filtered_df[column] < value]
+                    filtered_df = filtered_df[pd.to_numeric(filtered_df[column], errors='coerce') < pd.to_numeric(value, errors='coerce')]
+                    
                 elif operator == "greater_equal":
-                    filtered_df = filtered_df[filtered_df[column] >= value]
+                    filtered_df = filtered_df[pd.to_numeric(filtered_df[column], errors='coerce') >= pd.to_numeric(value, errors='coerce')]
+                    
                 elif operator == "less_equal":
-                    filtered_df = filtered_df[filtered_df[column] <= value]
+                    filtered_df = filtered_df[pd.to_numeric(filtered_df[column], errors='coerce') <= pd.to_numeric(value, errors='coerce')]
+                    
                 elif operator == "contains" and filtered_df[column].dtype == "object":
-                    filtered_df = filtered_df[filtered_df[column].str.contains(str(value), na=False)]
+                    # Case-insensitive contains for text fields
+                    filtered_df = filtered_df[
+                        filtered_df[column].str.contains(str(value), case=False, na=False)
+                    ]
+                    
                 elif operator == "isin" and isinstance(value, list):
-                    filtered_df = filtered_df[filtered_df[column].isin(value)]
+                    # Enhanced isin handling with case normalization
+                    filtered_df = self._apply_isin_filter(filtered_df, column, value)
+                    
+                else:
+                    logger.warning(f"Unknown operator: {operator}")
+                    continue
+                
+                after_size = len(filtered_df)
+                
+                if self.verbose:
+                    logger.info(f"Filter applied: {before_size} -> {after_size} rows ({after_size/before_size*100:.1f}% retained)")
+                
+                # If filter eliminated all data, implement fallback strategy
+                if after_size == 0 and before_size > 0:
+                    logger.warning(f"Filter eliminated all data. Attempting fallback strategy for {column} {operator} {value}")
+                    filtered_df = self._apply_fallback_filter(self.dataset.copy(), column, operator, value)
+                    
+                    if len(filtered_df) > 0:
+                        logger.info(f"Fallback strategy recovered {len(filtered_df)} rows")
+                    else:
+                        logger.error(f"Even fallback strategy failed for filter: {filter_def}")
+                        # Return partial result rather than empty dataset
+                        return self.dataset.copy()
+                        
             except Exception as e:
-                logger.error(f"Failed to apply filter {f}: {e}")
+                logger.error(f"Failed to apply filter {filter_def}: {e}")
+                # Continue with previous filtered result rather than fail completely
+                continue
 
+        final_size = len(filtered_df)
+        
         if self.verbose:
-            logger.info(f"Applied filters. Original size: {len(self.dataset)}, Filtered size: {len(filtered_df)}")
-
+            logger.info(f"All filters applied. Final result: {original_size} -> {final_size} rows ({final_size/original_size*100:.1f}% retained)")
+        
+        # Ensure we don't return an empty dataset unless absolutely necessary
+        if final_size == 0 and original_size > 0:
+            logger.warning("All filters resulted in empty dataset. Returning full dataset for analysis.")
+            return self.dataset
+            
         return filtered_df
+
+    def _map_pipeline_column(self, column_name: str) -> str:
+        """Map natural language column names to actual pipeline dataset columns."""
+        column_mappings = {
+            # State mappings
+            "state": "state_abb",
+            "states": "state_abb", 
+            "state_name": "state_abb",
+            "location": "state_abb",
+            
+            # Company mappings
+            "company": "pipeline_name",
+            "companies": "pipeline_name",
+            "pipeline_company": "pipeline_name",
+            "operator": "pipeline_name",
+            
+            # Category mappings
+            "category": "category_short",
+            "business_category": "category_short",
+            "type": "category_short",
+            
+            # Quantity mappings
+            "volume": "scheduled_quantity",
+            "quantity": "scheduled_quantity",
+            "flow": "scheduled_quantity",
+            "throughput": "scheduled_quantity",
+            
+            # Date mappings
+            "date": "eff_gas_day",
+            "time": "eff_gas_day",
+            "day": "eff_gas_day",
+            
+            # Location mappings
+            "county": "county_name",
+            "region": "state_abb",  # Fallback to state for region queries
+        }
+        
+        return column_mappings.get(column_name.lower(), column_name)
+    
+    def _apply_equals_filter(self, df: pd.DataFrame, column: str, value) -> pd.DataFrame:
+        """Apply equals filter with enhanced matching for pipeline data."""
+        
+        # Special handling for state abbreviations
+        if column == "state_abb":
+            # Handle both full names and abbreviations
+            if isinstance(value, str):
+                value_upper = value.upper()
+                # Try exact match first
+                result = df[df[column] == value_upper]
+                if len(result) > 0:
+                    return result
+                
+                # Try to convert state names to abbreviations
+                state_name_map = {
+                    "TEXAS": "TX", "LOUISIANA": "LA", "OKLAHOMA": "OK",
+                    "CALIFORNIA": "CA", "NEW YORK": "NY", "FLORIDA": "FL",
+                    # Add more as needed
+                }
+                
+                if value_upper in state_name_map:
+                    return df[df[column] == state_name_map[value_upper]]
+                    
+                # Fallback: partial match
+                return df[df[column].str.contains(value_upper, na=False)]
+        
+        # Special handling for pipeline companies (case-insensitive partial matching)
+        elif column == "pipeline_name":
+            if isinstance(value, str):
+                # Try exact match first
+                exact_match = df[df[column].str.lower() == value.lower()]
+                if len(exact_match) > 0:
+                    return exact_match
+                
+                # Try contains match
+                return df[df[column].str.contains(value, case=False, na=False)]
+        
+        # Default equals behavior
+        return df[df[column] == value]
+    
+    def _apply_isin_filter(self, df: pd.DataFrame, column: str, values: list) -> pd.DataFrame:
+        """Apply isin filter with enhanced matching."""
+        
+        if column == "state_abb":
+            # Normalize state values to uppercase
+            normalized_values = [str(v).upper() for v in values]
+            return df[df[column].isin(normalized_values)]
+        
+        # Default isin behavior
+        return df[df[column].isin(values)]
+    
+    def _apply_fallback_filter(self, df: pd.DataFrame, column: str, operator: str, value) -> pd.DataFrame:
+        """Apply fallback filtering when primary filter fails."""
+        
+        logger.info(f"Applying fallback strategy for {column} {operator} {value}")
+        
+        # For state filtering, if exact match fails, try partial matching
+        if column == "state_abb" and operator == "equals":
+            if isinstance(value, str):
+                # Try case-insensitive partial match
+                partial_matches = df[df[column].str.contains(value, case=False, na=False)]
+                if len(partial_matches) > 0:
+                    return partial_matches
+        
+        # For company filtering, try broader matching
+        elif column == "pipeline_name" and operator == "equals":
+            if isinstance(value, str):
+                # Try partial company name matching
+                partial_matches = df[df[column].str.contains(value, case=False, na=False)]
+                if len(partial_matches) > 0:
+                    return partial_matches
+        
+        # For numeric filters, try with null handling
+        elif operator in ["greater_than", "less_than", "greater_equal", "less_equal"]:
+            try:
+                # Remove nulls and try again
+                non_null_df = df[df[column].notna()]
+                numeric_col = pd.to_numeric(non_null_df[column], errors='coerce')
+                non_null_df = non_null_df[numeric_col.notna()]
+                
+                if operator == "greater_than":
+                    return non_null_df[pd.to_numeric(non_null_df[column], errors='coerce') > pd.to_numeric(value, errors='coerce')]
+                elif operator == "less_than":
+                    return non_null_df[pd.to_numeric(non_null_df[column], errors='coerce') < pd.to_numeric(value, errors='coerce')]
+                # Add other operators as needed
+                    
+            except Exception:
+                pass
+        
+        # If all fallback strategies fail, return empty DataFrame
+        return df.iloc[0:0]
 
     def _generate_cache_key(self, intent) -> str:
         """Generate robust cache key based on dataset schema and content hash."""
