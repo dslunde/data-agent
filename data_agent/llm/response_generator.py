@@ -414,6 +414,44 @@ class ResponseGenerator:
                 "group_column": results.get("group_by", []),
             }
 
+        elif intent.analysis_method == AnalysisMethod.GROUP_COMPARISON:
+            # Extract rich statistical analysis results for group comparison
+            group_stats = results.get("group_statistics", {})
+            overview = results.get("overview", {})
+            
+            summary = {
+                "total_rows_analyzed": overview.get("total_rows", 0),
+                "groups_compared": results.get("group_count", 0),
+                "group_column": results.get("group_column", "unknown"),
+                "target_columns": results.get("target_columns", []),
+                "group_sizes": results.get("group_sizes", {}),
+                "statistical_findings": {},
+            }
+            
+            # Extract statistical findings from each target column
+            for col_name, col_stats in group_stats.items():
+                if isinstance(col_stats, dict) and "group_statistics" in col_stats:
+                    group_data = col_stats["group_statistics"]
+                    statistical_test = col_stats.get("statistical_comparison", {})
+                    
+                    # Extract key statistics for each group
+                    group_summaries = {}
+                    for group_name, stats in group_data.items():
+                        group_summaries[group_name] = {
+                            "mean": stats.get("mean", 0),
+                            "median": stats.get("median", 0),
+                            "count": stats.get("count", 0),
+                            "std": stats.get("std", 0)
+                        }
+                    
+                    summary["statistical_findings"][col_name] = {
+                        "group_statistics": group_summaries,
+                        "statistical_test": statistical_test.get("test", "unknown"),
+                        "p_value": statistical_test.get("p_value", None),
+                        "significant": statistical_test.get("significant", False),
+                        "effect_size": statistical_test.get("effect_size", {})
+                    }
+
         else:
             # Generic summary
             summary = {

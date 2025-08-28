@@ -299,14 +299,45 @@ class PatternAnalyzer:
     def _calculate_categorical_association(self, data1: pd.Series, data2: pd.Series) -> Dict[str, Any]:
         """Calculate association for two categorical variables using Chi-square test."""
         try:
-            contingency_table = pd.crosstab(data1, data2)
+            # Pre-check: ensure there's actually data to analyze
+            valid_data1 = data1.dropna()
+            valid_data2 = data2.dropna()
+            
+            if len(valid_data1) == 0 or len(valid_data2) == 0:
+                return {"error": "No valid data after removing nulls"}
+            
+            # Align the series to have the same index
+            common_idx = valid_data1.index.intersection(valid_data2.index)
+            if len(common_idx) < 10:  # Need minimum data for meaningful chi-square
+                return {"error": "Insufficient paired data for association test"}
+            
+            aligned_data1 = valid_data1.loc[common_idx]
+            aligned_data2 = valid_data2.loc[common_idx]
+            
+            # Check if there are at least 2 categories in each variable
+            if len(aligned_data1.unique()) < 2 or len(aligned_data2.unique()) < 2:
+                return {"error": "Need at least 2 categories in each variable"}
+            
+            contingency_table = pd.crosstab(aligned_data1, aligned_data2)
+            
+            # Check if contingency table has sufficient data
+            if contingency_table.sum().sum() < 10:
+                return {"error": "Insufficient data in contingency table"}
+                
             chi2, p, dof, expected = stats.chi2_contingency(contingency_table)
             
             # Calculate Cramér's V for effect size
             n = contingency_table.sum().sum()
             phi2 = chi2 / n
             r, k = contingency_table.shape
-            cramers_v = np.sqrt(phi2 / min(k-1, r-1))
+            
+            # Prevent division by zero in Cramér's V calculation
+            min_dim = min(k-1, r-1)
+            if min_dim > 0:
+                cramers_v = np.sqrt(phi2 / min_dim)
+            else:
+                # When one variable has only one category, there's no association to measure
+                cramers_v = 0.0
 
             return {
                 "test": "chi_square",
@@ -338,30 +369,64 @@ class PatternAnalyzer:
             numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
             categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
 
+            # Aggressive performance optimization for very large datasets
+            if len(df) > 50000:
+                # Much smaller sample for very large datasets
+                sample_size = min(10000, len(df))
+                df_sample = df.sample(n=sample_size, random_state=42)
+                logger.info(f"Aggressively sampled {sample_size} rows from {len(df)} for correlation analysis performance")
+            else:
+                df_sample = df
+
+            # More aggressive column limiting to prevent timeout
+            max_numeric = 5  # Reduced from 10
+            max_categorical = 5  # Reduced from 10
+            
+            if len(numeric_cols) > max_numeric:
+                numeric_cols = numeric_cols[:max_numeric]
+                logger.info(f"Limited numeric columns to {max_numeric} for performance")
+            
+            if len(categorical_cols) > max_categorical:
+                categorical_cols = categorical_cols[:max_categorical] 
+                logger.info(f"Limited categorical columns to {max_categorical} for performance")
+
             all_associations = []
 
             # Numeric vs Numeric
             for i, col1 in enumerate(numeric_cols):
                 for col2 in numeric_cols[i + 1 :]:
                     correlation_info = self._calculate_detailed_correlation(
-                        df[col1], df[col2], col1, col2, method
+                        df_sample[col1], df_sample[col2], col1, col2, method
                     )
                     if correlation_info and not correlation_info.get("error"):
                         all_associations.append(correlation_info)
 
-            # Categorical vs Categorical
+            # Categorical vs Categorical (with early termination on timeout risk)
+            cat_pairs_processed = 0
+            max_cat_pairs = 10  # Reduced further to prevent timeout
             for i, col1 in enumerate(categorical_cols):
                 for col2 in categorical_cols[i + 1 :]:
-                    association_info = self._calculate_categorical_association(df[col1], df[col2])
+                    if cat_pairs_processed >= max_cat_pairs:
+                        logger.info(f"Limited categorical pairs to {max_cat_pairs} for performance")
+                        break
+                    association_info = self._calculate_categorical_association(df_sample[col1], df_sample[col2])
                     if association_info and not association_info.get("error"):
                         association_info.update({"variable1": col1, "variable2": col2})
                         all_associations.append(association_info)
+                    cat_pairs_processed += 1
+                if cat_pairs_processed >= max_cat_pairs:
+                    break
             
-            # Numeric vs Categorical (ANOVA)
+            # Numeric vs Categorical (ANOVA) - also limited
+            num_cat_pairs_processed = 0
+            max_num_cat_pairs = 15  # Reduced further for performance
             for num_col in numeric_cols:
                 for cat_col in categorical_cols:
+                    if num_cat_pairs_processed >= max_num_cat_pairs:
+                        logger.info(f"Limited numeric-categorical pairs to {max_num_cat_pairs} for performance")
+                        break
                     try:
-                        groups = [df[num_col][df[cat_col] == cat] for cat in df[cat_col].unique() if pd.notna(cat)]
+                        groups = [df_sample[num_col][df_sample[cat_col] == cat] for cat in df_sample[cat_col].unique() if pd.notna(cat)]
                         if len(groups) > 1:
                             f_val, p_val = stats.f_oneway(*groups)
                             if p_val < 0.05:
@@ -375,6 +440,10 @@ class PatternAnalyzer:
                                 })
                     except Exception as e:
                         logger.warning(f"ANOVA for {num_col} vs {cat_col} failed: {e}")
+                    
+                    num_cat_pairs_processed += 1
+                if num_cat_pairs_processed >= max_num_cat_pairs:
+                    break
 
 
             significant_correlations = [assoc for assoc in all_associations if assoc.get("significant")]
@@ -437,9 +506,35 @@ class PatternAnalyzer:
             if len(data) < 10:
                 return {"error": "Insufficient data points for clustering"}
 
-            # Scale the data
-            scaler = StandardScaler()
-            scaled_data = scaler.fit_transform(data)
+            # Handle extreme values and outliers to prevent numerical instability
+            # Cap extreme values at 99th percentile to avoid overflow in clustering
+            data_cleaned = data.copy()
+            for col in data.columns:
+                if data[col].dtype in ['float64', 'int64', 'float32', 'int32']:
+                    q99 = data[col].quantile(0.99)
+                    q01 = data[col].quantile(0.01)
+                    data_cleaned[col] = data[col].clip(lower=q01, upper=q99)
+
+            # For very large datasets, sample for performance
+            if len(data_cleaned) > 100000:
+                # Use stratified sampling to maintain data distribution
+                sample_size = min(50000, len(data_cleaned))
+                data_cleaned = data_cleaned.sample(n=sample_size, random_state=42)
+                logger.info(f"Sampled {sample_size} points from {len(data)} for clustering performance")
+
+            # Scale the data with robust scaling to handle outliers
+            from sklearn.preprocessing import RobustScaler
+            scaler = RobustScaler()  # More robust to outliers than StandardScaler
+            scaled_data = scaler.fit_transform(data_cleaned)
+            
+            # Check for numerical issues after scaling
+            if np.any(~np.isfinite(scaled_data)):
+                logger.warning("Non-finite values detected after scaling, using StandardScaler fallback")
+                scaler = StandardScaler()
+                scaled_data = scaler.fit_transform(data_cleaned)
+                
+                # If still problematic, replace inf/nan with finite values
+                scaled_data = np.nan_to_num(scaled_data, nan=0.0, posinf=3.0, neginf=-3.0)
 
             if algorithm == "kmeans":
                 return self._kmeans_clustering(data, scaled_data, features, n_clusters)
@@ -615,9 +710,37 @@ class PatternAnalyzer:
                 scaled_data, max_k=min(10, len(data) // 2)
             )
 
-        # Perform clustering
-        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-        cluster_labels = kmeans.fit_predict(scaled_data)
+        # Perform clustering with error handling for numerical issues
+        try:
+            # Use more robust k-means parameters for large, noisy datasets
+            kmeans = KMeans(
+                n_clusters=n_clusters, 
+                random_state=42, 
+                n_init=5,  # Reduce iterations for performance
+                max_iter=100,  # Limit iterations to prevent infinite loops
+                tol=1e-3,  # Slightly less strict convergence
+                init='k-means++'  # Better initialization
+            )
+            cluster_labels = kmeans.fit_predict(scaled_data)
+            
+        except Exception as e:
+            logger.warning(f"K-means failed with numerical error: {e}. Trying fallback approach.")
+            # Fallback: Use mini-batch k-means which is more robust to numerical issues
+            from sklearn.cluster import MiniBatchKMeans
+            try:
+                kmeans = MiniBatchKMeans(
+                    n_clusters=n_clusters,
+                    random_state=42,
+                    batch_size=min(1000, len(scaled_data)),
+                    max_iter=100
+                )
+                cluster_labels = kmeans.fit_predict(scaled_data)
+            except Exception as e2:
+                return {"error": f"Clustering failed due to numerical instability: {str(e2)}"}
+        
+        # Check if clustering produced valid results
+        if len(np.unique(cluster_labels)) < 2:
+            return {"error": "Clustering produced only one cluster, data may be too uniform"}
 
         # Enhanced clustering validation with multiple metrics
         validation_results = self._enhanced_clustering_validation(

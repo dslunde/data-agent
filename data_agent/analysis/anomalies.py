@@ -142,10 +142,22 @@ class AnomalyDetector:
         """
         try:
             if features is None:
-                features = df.select_dtypes(include=[np.number], exclude=['datetime64[ns]', 'datetime64']).columns.tolist()
+                # Get numeric columns but exclude any datetime or object columns that might contain timestamps
+                numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+                # Further filter to ensure no datetime columns slipped through
+                features = []
+                for col in numeric_cols:
+                    if col in df.columns and not pd.api.types.is_datetime64_any_dtype(df[col]):
+                        features.append(col)
 
-            # Validate features
-            features = [col for col in features if col in df.columns]
+            # Validate features and ensure they're numeric
+            validated_features = []
+            for col in features:
+                if col in df.columns and pd.api.types.is_numeric_dtype(df[col]) and not pd.api.types.is_datetime64_any_dtype(df[col]):
+                    validated_features.append(col)
+                elif col in df.columns:
+                    logger.warning(f"Skipping non-numeric feature '{col}' for anomaly detection")
+            features = validated_features
 
             if len(features) < 2:
                 return {
@@ -472,17 +484,36 @@ class AnomalyDetector:
 
         for feature in features:
             if feature in normal_data.columns and feature in anomaly_data.columns:
-                normal_stats = {
-                    "mean": float(normal_data[feature].mean()),
-                    "std": float(normal_data[feature].std()),
-                    "median": float(normal_data[feature].median()),
-                }
+                # Skip non-numeric columns that might have slipped through
+                if not pd.api.types.is_numeric_dtype(normal_data[feature]) or not pd.api.types.is_numeric_dtype(anomaly_data[feature]):
+                    continue
+                    
+                try:
+                    # Calculate statistics with error handling for edge cases
+                    normal_mean = normal_data[feature].mean()
+                    normal_std = normal_data[feature].std()
+                    normal_median = normal_data[feature].median()
+                    
+                    anomaly_mean = anomaly_data[feature].mean()
+                    anomaly_std = anomaly_data[feature].std()
+                    anomaly_median = anomaly_data[feature].median()
+                    
+                    # Only convert to float if values are not NaN or infinite
+                    normal_stats = {
+                        "mean": float(normal_mean) if pd.notna(normal_mean) and np.isfinite(normal_mean) else 0.0,
+                        "std": float(normal_std) if pd.notna(normal_std) and np.isfinite(normal_std) else 0.0,
+                        "median": float(normal_median) if pd.notna(normal_median) and np.isfinite(normal_median) else 0.0,
+                    }
 
-                anomaly_stats = {
-                    "mean": float(anomaly_data[feature].mean()),
-                    "std": float(anomaly_data[feature].std()),
-                    "median": float(anomaly_data[feature].median()),
-                }
+                    anomaly_stats = {
+                        "mean": float(anomaly_mean) if pd.notna(anomaly_mean) and np.isfinite(anomaly_mean) else 0.0,
+                        "std": float(anomaly_std) if pd.notna(anomaly_std) and np.isfinite(anomaly_std) else 0.0,
+                        "median": float(anomaly_median) if pd.notna(anomaly_median) and np.isfinite(anomaly_median) else 0.0,
+                    }
+                except (TypeError, ValueError) as e:
+                    # Skip features that can't be converted to float (e.g., timestamps, strings)
+                    logger.warning(f"Skipping feature {feature} in anomaly analysis due to type conversion error: {e}")
+                    continue
 
                 # Calculate deviations
                 mean_deviation = abs(anomaly_stats["mean"] - normal_stats["mean"])
