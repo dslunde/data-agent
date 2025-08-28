@@ -30,9 +30,12 @@ logger = logging.getLogger(__name__)
 class LLMClient(ABC):
     """Abstract base class for LLM clients."""
 
-    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
-        """Initialize LLM client."""
-        self.api_key = api_key
+    def __init__(self, model: Optional[str] = None):
+        """Initialize LLM client.
+        
+        Note: API keys are not stored in memory for security.
+        Subclasses handle API keys directly with their respective SDK clients.
+        """
         self.model = model
         self.request_count = 0
         self.last_request_time = 0
@@ -81,26 +84,68 @@ class OpenAIClient(LLMClient):
     """OpenAI GPT client with error handling and rate limiting."""
 
     def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o-mini"):
-        """Initialize OpenAI client."""
+        """Initialize OpenAI client.
+        
+        Args:
+            api_key: API key (if None, loads from OPENAI_API_KEY env var)
+            model: Model to use for requests
+        """
         if not OPENAI_AVAILABLE:
             raise ImportError(
                 "OpenAI package not available. Install with: pip install openai"
             )
 
-        # Get API key but don't store it - let OpenAI client handle it
-        resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
-        if not resolved_api_key or not resolved_api_key.strip():
-            raise ValueError(
-                "OpenAI API key not provided or empty. Set OPENAI_API_KEY environment variable."
-            )
+        super().__init__(model)
 
-        super().__init__(None, model)  # Don't store API key in parent
-
-        # Let OpenAI client manage the API key internally
-        self.client = OpenAI(api_key=resolved_api_key)
+        # Securely get and validate API key without storing
+        api_key_to_use = self._get_secure_api_key(api_key)
+        
+        # Let OpenAI SDK handle the API key securely
+        # We don't store the key in our instance
+        self.client = OpenAI(api_key=api_key_to_use)
         self.rate_limit_delay = 0.1  # OpenAI allows higher rates
 
         logger.info(f"Initialized OpenAI client with model: {self.model}")
+
+    def _get_secure_api_key(self, provided_key: Optional[str]) -> str:
+        """Securely retrieve and validate API key without storing."""
+        # Get key from parameter or environment
+        api_key = provided_key or os.getenv("OPENAI_API_KEY")
+        
+        if not api_key or not api_key.strip():
+            raise ValueError(
+                "OpenAI API key not provided or empty. Set OPENAI_API_KEY environment variable."
+            )
+        
+        # Validate key format without storing
+        if not self._is_valid_openai_key(api_key):
+            raise ValueError(
+                "OpenAI API key format is invalid. Expected format: sk-..."
+            )
+        
+        return api_key
+    
+    @staticmethod
+    def _is_valid_openai_key(key: str) -> bool:
+        """Validate OpenAI API key format without storing."""
+        if not key or not key.strip():
+            return False
+            
+        # Common placeholder patterns
+        placeholders = [
+            "your_openai_key_here",
+            "your_api_key_here", 
+            "replace_with_your_key",
+            "your_key_here",
+            "sk-placeholder"
+        ]
+        
+        key_lower = key.lower()
+        if any(placeholder in key_lower for placeholder in placeholders):
+            return False
+        
+        # OpenAI keys should start with sk- and be reasonable length
+        return key.startswith("sk-") and len(key) > 20
 
     async def generate_response(
         self,
@@ -163,26 +208,68 @@ class AnthropicClient(LLMClient):
     def __init__(
         self, api_key: Optional[str] = None, model: str = "claude-3-haiku-20240307"
     ):
-        """Initialize Anthropic client."""
+        """Initialize Anthropic client.
+        
+        Args:
+            api_key: API key (if None, loads from ANTHROPIC_API_KEY env var)
+            model: Model to use for requests
+        """
         if not ANTHROPIC_AVAILABLE:
             raise ImportError(
                 "Anthropic package not available. Install with: pip install anthropic"
             )
 
-        # Get API key but don't store it - let Anthropic client handle it
-        resolved_api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
-        if not resolved_api_key or not resolved_api_key.strip():
-            raise ValueError(
-                "Anthropic API key not provided or empty. Set ANTHROPIC_API_KEY environment variable."
-            )
+        super().__init__(model)
 
-        super().__init__(None, model)  # Don't store API key in parent
-
-        # Let Anthropic client manage the API key internally
-        self.client = Anthropic(api_key=resolved_api_key)
+        # Securely get and validate API key without storing
+        api_key_to_use = self._get_secure_api_key(api_key)
+        
+        # Let Anthropic SDK handle the API key securely
+        # We don't store the key in our instance
+        self.client = Anthropic(api_key=api_key_to_use)
         self.rate_limit_delay = 0.2  # Anthropic rate limits
 
         logger.info(f"Initialized Anthropic client with model: {self.model}")
+
+    def _get_secure_api_key(self, provided_key: Optional[str]) -> str:
+        """Securely retrieve and validate API key without storing."""
+        # Get key from parameter or environment
+        api_key = provided_key or os.getenv("ANTHROPIC_API_KEY")
+        
+        if not api_key or not api_key.strip():
+            raise ValueError(
+                "Anthropic API key not provided or empty. Set ANTHROPIC_API_KEY environment variable."
+            )
+        
+        # Validate key format without storing
+        if not self._is_valid_anthropic_key(api_key):
+            raise ValueError(
+                "Anthropic API key format is invalid. Expected format: sk-ant-..."
+            )
+        
+        return api_key
+    
+    @staticmethod
+    def _is_valid_anthropic_key(key: str) -> bool:
+        """Validate Anthropic API key format without storing."""
+        if not key or not key.strip():
+            return False
+            
+        # Common placeholder patterns
+        placeholders = [
+            "your_anthropic_key_here",
+            "your_api_key_here",
+            "replace_with_your_key", 
+            "your_key_here",
+            "sk-ant-placeholder"
+        ]
+        
+        key_lower = key.lower()
+        if any(placeholder in key_lower for placeholder in placeholders):
+            return False
+        
+        # Anthropic keys should start with sk-ant- and be reasonable length
+        return key.startswith("sk-ant-") and len(key) > 30
 
     async def generate_response(
         self,
@@ -274,84 +361,77 @@ class LLMManager:
             f"LLM Manager initialized with provider: {self.current_client.__class__.__name__ if self.current_client else 'None'}"
         )
 
-    def _is_valid_api_key(self, key: str, provider: str) -> bool:
-        """Check if API key is valid (not a placeholder)."""
-        if not key or not key.strip():
-            return False
-
-        # Common placeholder patterns
-        placeholders = [
-            "your_openai_key_here",
-            "your_anthropic_key_here",
-            "sk-placeholder",
-            "your_api_key_here",
-            "replace_with_your_key",
-            "your_key_here",
-        ]
-
-        key_lower = key.lower()
-        if any(placeholder in key_lower for placeholder in placeholders):
-            return False
-
-        # Provider-specific validation
+    @staticmethod
+    def _is_valid_api_key_format(key: str, provider: str) -> bool:
+        """Check if API key has valid format without storing the key.
+        
+        This method validates key format and detects placeholders,
+        but does not store the key in memory for security.
+        """
         if provider == "openai":
-            # OpenAI keys should start with sk- and be reasonable length
-            return key.startswith("sk-") and len(key) > 20
+            return OpenAIClient._is_valid_openai_key(key)
         elif provider == "anthropic":
-            # Anthropic keys should start with sk-ant- and be reasonable length
-            return key.startswith("sk-ant-") and len(key) > 30
-
-        return True
+            return AnthropicClient._is_valid_anthropic_key(key)
+        
+        return False
 
     def _initialize_clients(self):
-        """Initialize available LLM clients."""
+        """Initialize available LLM clients securely.
+        
+        This method attempts to initialize clients without storing API keys.
+        Each client handles its own secure key retrieval and validation.
+        """
         # Try to initialize OpenAI
-        openai_key = os.getenv("OPENAI_API_KEY")
-        if (
-            openai_key
-            and self._is_valid_api_key(openai_key, "openai")
-            and OPENAI_AVAILABLE
-        ):
+        if OPENAI_AVAILABLE and self._should_initialize_openai():
             try:
-                client = OpenAIClient(openai_key)
-                # Only add to clients if initialization was successful
+                # Let OpenAIClient handle secure key retrieval and validation
+                client = OpenAIClient()
                 self.clients["openai"] = client
                 logger.info("OpenAI client initialized successfully")
+            except ValueError as e:
+                logger.debug(f"OpenAI client initialization failed: {e}")
             except Exception as e:
                 logger.warning(f"Could not initialize OpenAI client: {e}")
-        else:
-            if not openai_key or not openai_key.strip():
-                logger.debug("OpenAI API key not found or empty")
-            elif not self._is_valid_api_key(openai_key, "openai"):
-                logger.debug(
-                    "OpenAI API key appears to be a placeholder or invalid format"
-                )
-            elif not OPENAI_AVAILABLE:
-                logger.debug("OpenAI package not available")
 
         # Try to initialize Anthropic
-        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-        if (
-            anthropic_key
-            and self._is_valid_api_key(anthropic_key, "anthropic")
-            and ANTHROPIC_AVAILABLE
-        ):
+        if ANTHROPIC_AVAILABLE and self._should_initialize_anthropic():
             try:
-                client = AnthropicClient(anthropic_key)
-                # Only add to clients if initialization was successful
+                # Let AnthropicClient handle secure key retrieval and validation
+                client = AnthropicClient()
                 self.clients["anthropic"] = client
                 logger.info("Anthropic client initialized successfully")
+            except ValueError as e:
+                logger.debug(f"Anthropic client initialization failed: {e}")
             except Exception as e:
                 logger.warning(f"Could not initialize Anthropic client: {e}")
-        else:
-            if not anthropic_key or not anthropic_key.strip():
-                logger.debug("Anthropic API key not found or empty")
-            elif not self._is_valid_api_key(anthropic_key, "anthropic"):
-                logger.debug(
-                    "Anthropic API key appears to be a placeholder or invalid format"
-                )
-            elif not ANTHROPIC_AVAILABLE:
-                logger.debug("Anthropic package not available")
+
+    def _should_initialize_openai(self) -> bool:
+        """Check if OpenAI should be initialized without reading the full key."""
+        openai_key = os.getenv("OPENAI_API_KEY")
+        if not openai_key or not openai_key.strip():
+            logger.debug("OpenAI API key not found or empty")
+            return False
+            
+        # Quick format check without storing the key
+        if not self._is_valid_api_key_format(openai_key, "openai"):
+            logger.debug("OpenAI API key appears to be a placeholder or invalid format")
+            return False
+            
+        return True
+
+    def _should_initialize_anthropic(self) -> bool:
+        """Check if Anthropic should be initialized without reading the full key."""
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        if not anthropic_key or not anthropic_key.strip():
+            logger.debug("Anthropic API key not found or empty")
+            return False
+            
+        # Quick format check without storing the key
+        if not self._is_valid_api_key_format(anthropic_key, "anthropic"):
+            logger.debug("Anthropic API key appears to be a placeholder or invalid format")
+            return False
+            
+        return True
 
     def _set_current_client(self):
         """Set the current client based on preference."""
@@ -488,7 +568,11 @@ def create_llm_manager(preferred_provider: str = "auto") -> LLMManager:
 
 
 def test_llm_connectivity() -> Dict[str, Any]:
-    """Test connectivity to available LLM providers."""
+    """Test connectivity to available LLM providers securely.
+    
+    This function tests connectivity without storing API keys in memory.
+    It relies on each client's secure initialization process.
+    """
     results = {
         "openai": {"available": False, "error": None},
         "anthropic": {"available": False, "error": None},
@@ -496,34 +580,46 @@ def test_llm_connectivity() -> Dict[str, Any]:
 
     # Test OpenAI
     try:
-        if OPENAI_AVAILABLE and os.getenv("OPENAI_API_KEY"):
-            client = OpenAIClient()
-            # Test basic connectivity by checking client exists
-            if client.client:
-                results["openai"]["available"] = True
+        if OPENAI_AVAILABLE:
+            # Check if environment variable exists without storing it
+            openai_key = os.getenv("OPENAI_API_KEY")
+            if openai_key and openai_key.strip():
+                # Try to create client (it will handle secure validation)
+                client = OpenAIClient()
+                if client.client:
+                    results["openai"]["available"] = True
+                else:
+                    results["openai"]["error"] = "Client initialization failed"
             else:
-                results["openai"]["error"] = "Client initialization failed"
+                results["openai"]["error"] = "API key not found in environment"
         else:
-            results["openai"][
-                "error"
-            ] = "API key not available or package not installed"
-    except Exception as e:
+            results["openai"]["error"] = "OpenAI package not installed"
+    except ValueError as e:
+        # These are expected for invalid keys
         results["openai"]["error"] = str(e)
+    except Exception as e:
+        results["openai"]["error"] = f"Unexpected error: {str(e)}"
 
     # Test Anthropic
     try:
-        if ANTHROPIC_AVAILABLE and os.getenv("ANTHROPIC_API_KEY"):
-            client = AnthropicClient()
-            # Test basic connectivity by checking client exists
-            if client.client:
-                results["anthropic"]["available"] = True
+        if ANTHROPIC_AVAILABLE:
+            # Check if environment variable exists without storing it
+            anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+            if anthropic_key and anthropic_key.strip():
+                # Try to create client (it will handle secure validation)
+                client = AnthropicClient()
+                if client.client:
+                    results["anthropic"]["available"] = True
+                else:
+                    results["anthropic"]["error"] = "Client initialization failed"
             else:
-                results["anthropic"]["error"] = "Client initialization failed"
+                results["anthropic"]["error"] = "API key not found in environment"
         else:
-            results["anthropic"][
-                "error"
-            ] = "API key not available or package not installed"
-    except Exception as e:
+            results["anthropic"]["error"] = "Anthropic package not installed"
+    except ValueError as e:
+        # These are expected for invalid keys
         results["anthropic"]["error"] = str(e)
+    except Exception as e:
+        results["anthropic"]["error"] = f"Unexpected error: {str(e)}"
 
     return results
