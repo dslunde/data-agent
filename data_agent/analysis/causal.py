@@ -486,174 +486,128 @@ class CausalAnalyzer:
         return results
 
     def analyze_pipeline_capacity_drivers(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Analyze what drives pipeline capacity utilization."""
+        """Analyze what drives capacity utilization using statistical relationships."""
         results = {
             "analysis_type": "capacity_drivers",
-            "methodology": "Multi-factor causal analysis",
-            "findings": [],
+            "methodology": "Statistical correlation and regression analysis",
+            "drivers": [],
             "statistical_tests": [],
             "confidence": "medium",
             "caveats": [],
         }
 
         try:
-            # Focus on non-zero quantities
-            active_flows = df[df["scheduled_quantity"] > 0].copy()
-
-            if len(active_flows) == 0:
-                results["error"] = "No active flows found"
+            # Find numeric columns that could represent capacity/utilization metrics
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            
+            if len(numeric_cols) < 2:
+                results["error"] = "Need at least 2 numeric columns for causal analysis"
+                return results
+            
+            # Look for capacity/utilization related columns
+            capacity_cols = [col for col in numeric_cols if any(keyword in col.lower() 
+                           for keyword in ['capacity', 'util', 'load', 'demand', 'pipeline'])]
+            
+            if not capacity_cols:
+                # If no capacity-specific columns, use the first numeric column as target
+                target_col = numeric_cols[0]
+                predictor_cols = numeric_cols[1:]
+            else:
+                # Use first capacity column as target
+                target_col = capacity_cols[0]
+                predictor_cols = [col for col in numeric_cols if col != target_col]
+            
+            if len(predictor_cols) == 0:
+                results["error"] = "No predictor variables available"
                 return results
 
-            # Test geographic influence
-            if "state_abb" in active_flows.columns:
-                state_groups = active_flows.groupby("state_abb")[
-                    "scheduled_quantity"
-                ].agg(["mean", "count"])
-                state_groups = state_groups[
-                    state_groups["count"] >= 100
-                ]  # Minimum sample size
-
-                if len(state_groups) > 1:
-                    # ANOVA test for state differences
-                    state_samples = []
-                    for state in state_groups.index:
-                        state_data = active_flows[active_flows["state_abb"] == state][
-                            "scheduled_quantity"
-                        ]
-                        if len(state_data) >= 100:  # Minimum sample size
-                            state_samples.append(
-                                state_data.sample(min(1000, len(state_data)))
-                            )  # Sample for performance
-
-                    if len(state_samples) >= 2:
-                        # Validate ANOVA assumptions and apply appropriate test
+            # Analyze correlation relationships between target and predictors
+            correlation_drivers = []
+            for predictor in predictor_cols:
+                # Remove missing values for correlation calculation
+                clean_data = df[[target_col, predictor]].dropna()
+                if len(clean_data) >= 30:  # Minimum sample size for correlation
+                    correlation = clean_data[target_col].corr(clean_data[predictor])
+                    
+                    if abs(correlation) >= 0.3:  # Moderate correlation threshold
+                        # Calculate confidence interval for correlation
+                        conf_int = self._calculate_correlation_confidence_interval(
+                            correlation, len(clean_data)
+                        )
+                        
+                        driver = {
+                            "factor": predictor,
+                            "correlation": float(correlation),
+                            "relationship": "positive" if correlation > 0 else "negative",
+                            "strength": "strong" if abs(correlation) >= 0.7 else "moderate",
+                            "sample_size": len(clean_data),
+                            "confidence_interval": conf_int,
+                            "evidence": f"r = {correlation:.3f}, 95% CI [{conf_int['lower']:.3f}, {conf_int['upper']:.3f}]"
+                        }
+                        correlation_drivers.append(driver)
+            
+            results["drivers"] = correlation_drivers
+            
+            # Look for categorical variables that might group data differently
+            categorical_cols = df.select_dtypes(include=['object', 'category']).columns
+            
+            for cat_col in categorical_cols:
+                if df[cat_col].nunique() <= 10 and df[cat_col].nunique() >= 2:  # Reasonable number of groups
+                    # Group analysis
+                    groups = []
+                    for category in df[cat_col].unique():
+                        if pd.notna(category):
+                            group_data = df[df[cat_col] == category][target_col].dropna()
+                            if len(group_data) >= 10:  # Minimum group size
+                                groups.append(group_data)
+                    
+                    if len(groups) >= 2:
+                        # Perform group comparison test
                         test_result = self._validate_and_perform_group_test(
-                            state_samples, "ANOVA (State Effects)"
+                            groups, f"Group Analysis ({cat_col})"
                         )
                         results["statistical_tests"].append(test_result)
-
-                        if test_result.get("significant_corrected", test_result.get("significant", False)):
-                            results["findings"].append(
-                                {
-                                    "factor": "Geographic Location (State)",
-                                    "effect": "Significant regional differences in pipeline utilization",
-                                    "evidence": f"Test: {test_result['test']}, Statistic: {test_result.get('statistic', 'N/A'):.2f}, p-value: {test_result.get('p_value_corrected', test_result.get('p_value', 'N/A')):.4f}",
-                                    "effect_size": test_result.get('effect_size', {}),
-                                    "business_impact": "Different states show distinct pipeline usage patterns",
-                                }
-                            )
-
-            # Test business category influence
-            if "category_short" in active_flows.columns:
-                cat_groups = active_flows.groupby("category_short")[
-                    "scheduled_quantity"
-                ].agg(["mean", "count"])
-                cat_groups = cat_groups[cat_groups["count"] >= 100]
-
-                if len(cat_groups) > 1:
-                    # Test for category differences
-                    cat_samples = []
-                    for category in cat_groups.index:
-                        cat_data = active_flows[
-                            active_flows["category_short"] == category
-                        ]["scheduled_quantity"]
-                        if len(cat_data) >= 100:
-                            cat_samples.append(
-                                cat_data.sample(min(1000, len(cat_data)))
-                            )
-
-                    if len(cat_samples) >= 2:
-                        # Validate ANOVA assumptions and apply appropriate test
-                        test_result = self._validate_and_perform_group_test(
-                            cat_samples, "ANOVA (Category Effects)"
-                        )
-                        results["statistical_tests"].append(test_result)
-
-                        if test_result.get("significant_corrected", test_result.get("significant", False)):
-                            results["findings"].append(
-                                {
-                                    "factor": "Business Category",
-                                    "effect": "Significant differences in volume by customer type",
-                                    "evidence": f"Test: {test_result['test']}, Statistic: {test_result.get('statistic', 'N/A'):.2f}, p-value: {test_result.get('p_value_corrected', test_result.get('p_value', 'N/A')):.4f}",
-                                    "effect_size": test_result.get('effect_size', {}),
-                                    "business_impact": "Different customer categories drive distinct usage patterns",
-                                }
-                            )
-
-            # Test receipt vs delivery patterns
-            if "rec_del_sign" in active_flows.columns:
-                receipts = active_flows[active_flows["rec_del_sign"] == 1][
-                    "scheduled_quantity"
-                ]
-                deliveries = active_flows[active_flows["rec_del_sign"] == -1][
-                    "scheduled_quantity"
-                ]
-
-                if len(receipts) >= 100 and len(deliveries) >= 100:
-                    # Sample for performance
-                    receipts_sample = receipts.sample(min(2000, len(receipts)))
-                    deliveries_sample = deliveries.sample(min(2000, len(deliveries)))
-
-                    # Mann-Whitney U test with effect size and confidence intervals
-                    test_result = self._perform_mann_whitney_test(
-                        receipts_sample, deliveries_sample, "Receipt vs Delivery"
-                    )
-                    results["statistical_tests"].append(test_result)
-
-                    if test_result.get("significant_corrected", test_result.get("significant", False)):
-                        receipt_median = receipts.median()
-                        delivery_median = deliveries.median()
-                        results["findings"].append(
-                            {
-                                "factor": "Flow Direction (Receipt vs Delivery)",
-                                "effect": "Receipt volumes differ significantly from delivery volumes",
-                                "evidence": f"Receipt median: {receipt_median:.0f}, Delivery median: {delivery_median:.0f}, p-value: {test_result.get('p_value_corrected', test_result.get('p_value', 'N/A')):.4f}",
-                                "effect_size": test_result.get('effect_size', {}),
-                                "confidence_intervals": test_result.get('confidence_intervals', {}),
-                                "business_impact": "Pipeline networks show asymmetric flow patterns",
+                        
+                        if test_result.get("significant", False):
+                            group_means = [float(g.mean()) for g in groups]
+                            driver = {
+                                "factor": cat_col,
+                                "effect": "Significant group differences",
+                                "group_means": group_means,
+                                "test_statistic": test_result.get("statistic"),
+                                "p_value": test_result.get("p_value"),
+                                "effect_size": test_result.get("effect_size", {}),
+                                "evidence": f"Test: {test_result.get('test', 'N/A')}, p = {test_result.get('p_value', 'N/A'):.4f}"
                             }
-                        )
+                            results["drivers"].append(driver)
 
-            # Add business context
-            results["business_context"] = {
-                "domain": "Natural Gas Pipeline Transportation",
-                "key_factors": "Geographic location, customer type, flow direction",
-                "implications": "Understanding capacity drivers helps optimize infrastructure investment",
-            }
-
-            # Set confidence based on number of significant findings
-            significant_tests = len(
-                [t for t in results["statistical_tests"] if t.get("significant", False)]
-            )
-            if significant_tests >= 2:
+            # Set confidence based on findings
+            if len(results["drivers"]) >= 3:
                 results["confidence"] = "high"
-            elif significant_tests >= 1:
+            elif len(results["drivers"]) >= 1:
                 results["confidence"] = "medium"
             else:
                 results["confidence"] = "low"
 
-            # Apply multiple testing correction
+            # Apply multiple testing correction if we have statistical tests
             if results["statistical_tests"]:
                 results = self._apply_overall_multiple_testing_correction(results)
 
+            # Add analysis summary
+            results["summary"] = {
+                "target_variable": target_col,
+                "predictors_analyzed": predictor_cols,
+                "significant_drivers": len(results["drivers"]),
+                "data_points": len(df)
+            }
+
             # Add appropriate caveats
             results["caveats"] = [
-                "Analysis based on scheduled quantities, not actual flows",
-                "Results may vary by time period and market conditions",
-                "Geographic effects may be confounded with pipeline infrastructure",
-                "Sample sizes vary across categories and may affect statistical power",
-                "Multiple testing correction applied using Benjamini-Hochberg method",
-                "Statistical assumptions validated before applying tests",
+                "Correlation does not imply causation",
+                "Results are based on statistical associations in the data",
+                "External factors not in dataset may influence relationships",
+                "Temporal relationships not considered in this analysis"
             ]
-
-            # Add methodology notes
-            results["methodology_notes"] = {
-                "assumptions_tested": "Normality (Shapiro-Wilk), Homogeneity of variance (Levene)",
-                "fallback_methods": "Kruskal-Wallis for non-parametric comparisons",
-                "multiple_testing_correction": "Benjamini-Hochberg FDR correction",
-                "effect_sizes": "Cohen's d for pairwise comparisons, eta-squared for ANOVA",
-                "confidence_intervals": "Bootstrap 95% confidence intervals where applicable"
-            }
 
         except Exception as e:
             logger.error(f"Error in causal analysis: {e}")
@@ -661,96 +615,118 @@ class CausalAnalyzer:
 
         return results
 
+    def _calculate_correlation_confidence_interval(self, r: float, n: int, confidence: float = 0.95) -> Dict[str, float]:
+        """Calculate confidence interval for correlation coefficient using Fisher's z-transformation."""
+        try:
+            if abs(r) >= 1.0 or n < 3:
+                return {"lower": np.nan, "upper": np.nan, "confidence_level": confidence}
+            
+            # Fisher's z-transformation
+            z = 0.5 * np.log((1 + r) / (1 - r))
+            
+            # Standard error
+            se_z = 1 / np.sqrt(n - 3)
+            
+            # Critical value for given confidence level
+            alpha = 1 - confidence
+            z_critical = stats.norm.ppf(1 - alpha / 2)
+            
+            # Confidence interval in z space
+            z_lower = z - z_critical * se_z
+            z_upper = z + z_critical * se_z
+            
+            # Transform back to correlation space
+            r_lower = (np.exp(2 * z_lower) - 1) / (np.exp(2 * z_lower) + 1)
+            r_upper = (np.exp(2 * z_upper) - 1) / (np.exp(2 * z_upper) + 1)
+            
+            return {
+                "lower": float(r_lower),
+                "upper": float(r_upper),
+                "confidence_level": confidence
+            }
+            
+        except Exception as e:
+            logger.warning(f"Error calculating correlation confidence interval: {e}")
+            return {"lower": np.nan, "upper": np.nan, "confidence_level": confidence}
+
     def detect_infrastructure_bottlenecks(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Identify potential infrastructure bottlenecks in the pipeline network."""
+        """Identify potential infrastructure bottlenecks using statistical analysis."""
         results = {
             "analysis_type": "bottleneck_detection",
-            "methodology": "Network flow analysis with capacity constraints",
+            "methodology": "Statistical bottleneck detection using capacity and utilization metrics",
             "bottlenecks": [],
             "recommendations": [],
             "confidence": "medium",
         }
 
         try:
-            # Focus on locations with both receipts and deliveries (interconnection points)
-            location_flows = (
-                df.groupby("loc_name")
-                .agg(
-                    {
-                        "scheduled_quantity": ["sum", "count", "mean", "std"],
-                        "rec_del_sign": lambda x: (x == 1).sum()
-                        - (x == -1).sum(),  # Net flow
-                    }
-                )
-                .round(2)
-            )
-
-            location_flows.columns = [
-                "total_volume",
-                "transaction_count",
-                "avg_volume",
-                "volume_std",
-                "net_flow",
-            ]
-            location_flows = location_flows[
-                location_flows["transaction_count"] >= 50
-            ]  # Minimum activity
-
-            if len(location_flows) == 0:
-                results["error"] = "No locations with sufficient activity found"
+            # Find numeric columns that could represent capacity, utilization, or throughput
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            
+            if len(numeric_cols) == 0:
+                results["error"] = "No numeric columns found for bottleneck analysis"
                 return results
-
-            # Identify high-volume, high-variability locations (potential bottlenecks)
-            volume_threshold = location_flows["total_volume"].quantile(
-                0.8
-            )  # Top 20% by volume
-            variability_threshold = location_flows["volume_std"].quantile(
-                0.8
-            )  # Top 20% variability
-
-            potential_bottlenecks = location_flows[
-                (location_flows["total_volume"] >= volume_threshold)
-                & (location_flows["volume_std"] >= variability_threshold)
-            ].sort_values("total_volume", ascending=False)
-
-            for loc_name, row in potential_bottlenecks.head(10).iterrows():
-                # Get location details
-                loc_data = df[df["loc_name"] == loc_name]
-                states = loc_data["state_abb"].unique()
-                pipelines = loc_data["pipeline_name"].unique()
-                categories = loc_data["category_short"].value_counts()
-
-                bottleneck = {
-                    "location": loc_name,
-                    "total_volume": float(row["total_volume"]),
-                    "avg_volume": float(row["avg_volume"]),
-                    "volume_variability": float(row["volume_std"]),
-                    "net_flow": float(row["net_flow"]),
-                    "transaction_count": int(row["transaction_count"]),
-                    "states": states.tolist(),
-                    "pipelines": pipelines.tolist()[:3],  # Top 3
-                    "primary_categories": categories.head(3).to_dict(),
-                    "bottleneck_score": float(
-                        row["total_volume"] * row["volume_std"] / 1e6
-                    ),  # Composite score
-                }
-
-                results["bottlenecks"].append(bottleneck)
+            
+            # Look for columns that might represent infrastructure metrics
+            capacity_cols = [col for col in numeric_cols if any(keyword in col.lower() 
+                           for keyword in ['capacity', 'util', 'load', 'throughput', 'pipeline'])]
+            
+            if not capacity_cols:
+                # Use all numeric columns if no infrastructure-specific ones found
+                capacity_cols = numeric_cols.tolist()[:5]  # Limit to first 5 to avoid noise
+            
+            # Calculate statistical bottlenecks for each metric
+            for col in capacity_cols:
+                if df[col].std() == 0:  # Skip constant columns
+                    continue
+                
+                # Identify outliers (potential bottlenecks) using statistical methods
+                Q1 = df[col].quantile(0.25)
+                Q3 = df[col].quantile(0.75)
+                IQR = Q3 - Q1
+                
+                # Define bottleneck as values significantly above Q3 (high utilization/load)
+                bottleneck_threshold = Q3 + 1.5 * IQR
+                high_values = df[df[col] > bottleneck_threshold]
+                
+                if len(high_values) > 0:
+                    # Calculate bottleneck statistics
+                    mean_normal = df[df[col] <= Q3][col].mean()
+                    mean_bottleneck = high_values[col].mean()
+                    severity = (mean_bottleneck - mean_normal) / mean_normal if mean_normal != 0 else 0
+                    
+                    bottleneck = {
+                        "metric": col,
+                        "bottleneck_instances": len(high_values),
+                        "threshold": float(bottleneck_threshold),
+                        "severity_ratio": float(severity),
+                        "mean_normal": float(mean_normal),
+                        "mean_bottleneck": float(mean_bottleneck),
+                        "max_observed": float(high_values[col].max()),
+                        "frequency_pct": float(len(high_values) / len(df) * 100),
+                        "bottleneck_score": float(severity * len(high_values) / len(df))
+                    }
+                    
+                    results["bottlenecks"].append(bottleneck)
 
             # Generate recommendations
             if len(results["bottlenecks"]) > 0:
                 results["recommendations"] = [
-                    "Monitor high-variability locations for capacity constraints",
-                    "Consider infrastructure investments at identified bottlenecks",
-                    "Implement dynamic scheduling to optimize flow through constrained points",
-                    "Analyze seasonal patterns to predict capacity needs",
+                    "Monitor metrics with high bottleneck scores for capacity constraints",
+                    "Consider infrastructure investments at identified bottleneck points", 
+                    "Implement load balancing to distribute traffic more evenly",
+                    "Analyze patterns to predict when bottlenecks are most likely to occur"
                 ]
+                results["confidence"] = "high"
+            else:
+                results["recommendations"] = ["No significant bottlenecks detected in current data"]
+                results["confidence"] = "medium"
 
             results["summary"] = {
-                "total_locations_analyzed": len(location_flows),
+                "total_metrics_analyzed": len(capacity_cols),
                 "potential_bottlenecks_found": len(results["bottlenecks"]),
-                "volume_threshold_used": float(volume_threshold),
-                "variability_threshold_used": float(variability_threshold),
+                "analysis_columns": capacity_cols,
+                "data_points": len(df)
             }
 
         except Exception as e:
