@@ -272,8 +272,11 @@ class DataLoader:
 
         # Convert low-cardinality string columns to category
         for col in df.select_dtypes(include=["object"]).columns:
-            if df[col].nunique() < len(df) * 0.5:  # Less than 50% unique values
-                df[col] = df[col].astype("category")
+            try:
+                df[col] = pd.to_numeric(df[col])
+            except (ValueError, TypeError):
+                if df[col].nunique() < len(df) * 0.5:  # Less than 50% unique values
+                    df[col] = df[col].astype("category")
 
         new_memory = df.memory_usage(deep=True).sum()
         reduction = (original_memory - new_memory) / original_memory * 100

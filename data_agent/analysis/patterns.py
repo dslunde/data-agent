@@ -469,6 +469,39 @@ class PatternAnalyzer:
             logger.error(f"Error in correlation analysis: {e}")
             return {"error": str(e)}
 
+    def _find_best_features_for_clustering(self, df: pd.DataFrame) -> List[str]:
+        """
+        Find the best features for clustering based on heuristics.
+
+        Args:
+            df: DataFrame to analyze
+
+        Returns:
+            List of feature columns to use for clustering
+        """
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        
+        # Heuristics to find relevant features
+        flow_keywords = ["flow", "quantity", "volume", "rate"]
+        location_keywords = ["lat", "lon", "latitude", "longitude"]
+
+        flow_features = [col for col in numeric_cols if any(keyword in col.lower() for keyword in flow_keywords)]
+        location_features = [col for col in numeric_cols if any(keyword in col.lower() for keyword in location_keywords)]
+
+        # Filter out columns with a high percentage of missing values
+        def has_low_missing_values(col):
+            return df[col].isnull().sum() / len(df) < 0.5
+
+        flow_features = [col for col in flow_features if has_low_missing_values(col)]
+        location_features = [col for col in location_features if has_low_missing_values(col)]
+
+        # Prioritize flow and location features
+        if flow_features and location_features:
+            return flow_features + location_features
+        
+        # If no specific features found, return all numeric columns with low missing values
+        return [col for col in numeric_cols if has_low_missing_values(col)]
+
     def clustering_analysis(
         self,
         df: pd.DataFrame,
@@ -492,7 +525,7 @@ class PatternAnalyzer:
         """
         try:
             if features is None:
-                features = df.select_dtypes(include=[np.number]).columns.tolist()
+                features = self._find_best_features_for_clustering(df)
 
             # Validate features
             features = [col for col in features if col in df.columns]
@@ -537,9 +570,9 @@ class PatternAnalyzer:
                 scaled_data = np.nan_to_num(scaled_data, nan=0.0, posinf=3.0, neginf=-3.0)
 
             if algorithm == "kmeans":
-                return self._kmeans_clustering(data, scaled_data, features, n_clusters)
+                return self._kmeans_clustering(data_cleaned, scaled_data, features, n_clusters)
             elif algorithm == "dbscan":
-                return self._dbscan_clustering(data, scaled_data, features, eps, min_samples)
+                return self._dbscan_clustering(data_cleaned, scaled_data, features, eps, min_samples)
             else:
                 return {"error": f"Unknown clustering algorithm: {algorithm}"}
 

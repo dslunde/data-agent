@@ -43,6 +43,7 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+cache/
 nosetests.xml
 coverage.xml
 *.cover
@@ -210,6 +211,7 @@ __marimo__/
 data/
 !data_agent/data/
 *.parquet
+*.pkl
 *.csv
 *.json
 *.xlsx
