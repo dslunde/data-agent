@@ -318,6 +318,32 @@ This is an evaluation project, but the architecture supports:
 - **Technical Excellence**: Clean, maintainable, well-documented code
 - **Scalability**: Proven performance on enterprise-scale datasets
 
+## ⚠️ Limitations and Blindspots
+
+### Statistical Analysis Caveats
+- **LLM Generative Nature**: While this agent utilizes statistical tools for calculations, LLMs are inherently generative, and as such should not be relied upon as the objective source of truth for numerical analysis.
+- **Correlation vs Causation**: Results indicate statistical relationships, not definitive causal mechanisms
+- **Sample Size Sensitivity**: Analysis quality depends on sufficient data volume for statistical significance
+- **Domain Expertise Required**: Complex pipeline operations may require subject matter expert validation
+
+### Technical Limitations
+- **Memory Constraints**: Performance degrades with datasets exceeding available system memory
+- **API Dependencies**: Requires stable internet connection for LLM provider access
+- **Statistical Assumptions**: Some tests assume normal distributions or specific data characteristics
+- **Query Interpretation**: Natural language ambiguity may lead to unintended analysis approaches
+
+### Data Quality Dependencies
+- **Input Validation**: Analysis accuracy relies on clean, properly formatted input data
+- **Missing Value Impact**: Incomplete data can skew statistical conclusions
+- **Temporal Assumptions**: Time-series analysis assumes consistent data collection methodologies
+- **Geographic Precision**: Location-based analysis limited by data geographic accuracy
+
+### Business Context Limitations
+- **Industry Specificity**: Optimized for natural gas pipeline data; other domains may yield suboptimal insights
+- **Regulatory Compliance**: Analysis does not constitute regulatory compliance validation
+- **Investment Decisions**: Statistical insights should not be the sole basis for business investments
+- **Real-time Operations**: Not designed for real-time operational decision making
+
 ---
 
 **Data Agent**: Where advanced analytics meets natural language understanding for enterprise-grade pipeline intelligence.
