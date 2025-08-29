@@ -7,7 +7,7 @@ import numpy as np
 from typing import Dict, List, Any, Optional
 import logging
 from scipy import stats
-from scipy.stats import normaltest, jarque_bera, anderson
+from scipy.stats import normaltest, jarque_bera, anderson, shapiro
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.covariance import EllipticEnvelope
@@ -120,6 +120,87 @@ class AnomalyDetector:
         except Exception as e:
             logger.error(f"Error in outlier detection: {e}")
             return {"error": str(e)}
+
+    def _validate_outlier_detection_assumptions(
+        self, df: pd.DataFrame, columns: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Validate data assumptions for outlier detection methods.
+        
+        Args:
+            df: DataFrame to validate
+            columns: Columns to analyze
+            
+        Returns:
+            Dictionary with validation results
+        """
+        validation = {
+            "total_samples": len(df),
+            "columns_validated": [],
+            "warnings": [],
+            "sufficient_data": True,
+            "normality_tests": {},
+            "data_quality": {}
+        }
+        
+        # Check minimum data requirements
+        if len(df) < 10:
+            validation["sufficient_data"] = False
+            validation["warnings"].append("Dataset too small for reliable outlier detection (< 10 samples)")
+        
+        for col in columns:
+            if col not in df.columns:
+                validation["warnings"].append(f"Column '{col}' not found in dataset")
+                continue
+                
+            col_data = df[col].dropna()
+            validation["columns_validated"].append(col)
+            
+            # Data quality checks
+            missing_pct = (df[col].isnull().sum() / len(df)) * 100
+            unique_vals = df[col].nunique()
+            
+            validation["data_quality"][col] = {
+                "missing_percentage": float(missing_pct),
+                "unique_values": int(unique_vals),
+                "data_points": len(col_data)
+            }
+            
+            # Warn about high missing data
+            if missing_pct > 50:
+                validation["warnings"].append(f"Column '{col}' has {missing_pct:.1f}% missing values")
+            
+            # Warn about low variance data
+            if unique_vals == 1:
+                validation["warnings"].append(f"Column '{col}' has no variance (all values identical)")
+            elif unique_vals < 3 and len(col_data) > 10:
+                validation["warnings"].append(f"Column '{col}' has very low variance ({unique_vals} unique values)")
+            
+            # Test for normality (relevant for z-score method)
+            if len(col_data) >= 8:  # Minimum for normality tests
+                try:
+                    # Shapiro-Wilk test for smaller samples
+                    if len(col_data) <= 5000:
+                        from scipy.stats import shapiro
+                        stat, p_value = shapiro(col_data)
+                        validation["normality_tests"][col] = {
+                            "test": "shapiro_wilk",
+                            "statistic": float(stat),
+                            "p_value": float(p_value),
+                            "is_normal": p_value > 0.05
+                        }
+                    else:
+                        # Use Anderson-Darling for larger samples
+                        stat, critical_vals, significance_level = anderson(col_data, dist='norm')
+                        validation["normality_tests"][col] = {
+                            "test": "anderson_darling",
+                            "statistic": float(stat),
+                            "is_normal": stat < critical_vals[2]  # 5% significance level
+                        }
+                except Exception as e:
+                    validation["warnings"].append(f"Could not test normality for column '{col}': {str(e)}")
+        
+        return validation
 
     def detect_multivariate_anomalies(
         self,
