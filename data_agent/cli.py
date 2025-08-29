@@ -206,6 +206,10 @@ async def run_data_agent(
 
     # Initialize the core application
     try:
+        # Add loading message for initialization
+        if not batch_mode:
+            click.echo("🔄 Initializing Data Agent... this may take a moment...")
+        
         core = DataAgentCore(
             preferred_provider=provider,
             model=model,
@@ -213,8 +217,8 @@ async def run_data_agent(
             verbose=verbose,
         )
 
-        # Load dataset
-        await load_dataset(core, data_path, download_url, sample_size, verbose)
+        # Load dataset with enhanced progress messages
+        await load_dataset(core, data_path, download_url, sample_size, verbose, batch_mode)
 
         if batch_mode:
             # Run single query
@@ -234,10 +238,20 @@ async def load_dataset(
     download_url: Optional[str],
     sample_size: Optional[int],
     verbose: bool,
+    batch_mode: bool = False,
 ):
     """Load dataset into the core application."""
 
     try:
+        # Add progress messages for better user experience
+        if not batch_mode:
+            if data_path:
+                click.echo(f"📂 Loading dataset from {data_path}...")
+                click.echo("⚙️ Processing and optimizing dataset... please wait...")
+            else:
+                click.echo("📥 Downloading and processing dataset...")
+                click.echo("📊 Applying dataset optimizations... this may take up to 30 seconds...")
+        
         if verbose:
             with click.progressbar(length=100, label="Loading dataset") as bar:
                 # Simulate progress for user feedback
@@ -260,6 +274,11 @@ async def load_dataset(
                 await core.load_local_dataset(data_path, sample_size)
             else:
                 await core.download_and_load_dataset(download_url, sample_size)
+
+        # Add completion message
+        if not batch_mode:
+            click.echo("✅ Data Agent ready! You can now ask questions about your data.")
+            click.echo()
 
         # Show dataset info based on verbosity
         dataset_info = core.get_dataset_info()

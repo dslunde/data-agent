@@ -175,9 +175,31 @@ class DataLoader:
 
         logger.info(f"Loaded dataset with shape {df.shape}")
 
+        # Verify dataset integrity before processing
+        verification = self.verify_dataset_integrity(df, str(file_path))
+        
+        if verification["status"] == "error":
+            error_msg = "; ".join(verification["issues"])
+            raise ValueError(f"Dataset failed verification: {error_msg}")
+        
+        # Log warnings if any
+        for warning in verification["warnings"]:
+            logger.warning(f"Dataset verification warning: {warning}")
+        
+        # Log success with stats
+        stats = verification["stats"]
+        logger.info(f"✅ Dataset verified: {stats['rows']:,} rows, {stats['columns']} cols, {stats['completeness_percent']}% complete")
+
         # Optimize data types if requested
         if optimize_dtypes:
+            original_memory = verification['stats']['memory_mb']
             df = self._optimize_dtypes(df)
+            new_memory = df.memory_usage(deep=True).sum() / 1024 / 1024
+            if original_memory > 0:
+                savings_pct = ((original_memory - new_memory) / original_memory * 100)
+                logger.info(f"Optimized memory usage by {savings_pct:.1f}%")
+            else:
+                logger.info("Memory optimization completed")
 
         # Clean column names
         df = self._clean_column_names(df)
@@ -370,6 +392,100 @@ class DataLoader:
                 )
 
         return issues
+
+    def verify_dataset_integrity(self, df: pd.DataFrame, file_path: str) -> Dict[str, Any]:
+        """
+        Verify that the dataset was loaded correctly and meets basic requirements.
+        
+        Args:
+            df: The loaded DataFrame to verify
+            file_path: Path to the original file (for context)
+        
+        Returns:
+            Dict with verification results and any issues found
+        """
+        verification = {
+            "status": "success",
+            "issues": [],
+            "warnings": [],
+            "stats": {}
+        }
+        
+        try:
+            # Basic shape verification
+            rows, cols = df.shape
+            verification["stats"]["rows"] = rows
+            verification["stats"]["columns"] = cols
+            
+            if rows == 0:
+                verification["status"] = "error"
+                verification["issues"].append("Dataset is empty (0 rows)")
+                return verification
+                
+            if cols == 0:
+                verification["status"] = "error"
+                verification["issues"].append("Dataset has no columns")
+                return verification
+            
+            # Memory usage check
+            memory_mb = df.memory_usage(deep=True).sum() / 1024 / 1024
+            verification["stats"]["memory_mb"] = round(memory_mb, 2)
+            
+            # Data type verification
+            numeric_cols = len(df.select_dtypes(include=[np.number]).columns)
+            categorical_cols = len(df.select_dtypes(include=['object', 'category']).columns)
+            datetime_cols = len(df.select_dtypes(include=['datetime64']).columns)
+            
+            verification["stats"]["numeric_columns"] = numeric_cols
+            verification["stats"]["categorical_columns"] = categorical_cols
+            verification["stats"]["datetime_columns"] = datetime_cols
+            
+            # Check for completely null columns
+            null_columns = df.columns[df.isnull().all()].tolist()
+            if null_columns:
+                verification["warnings"].append(f"Columns with all null values: {null_columns}")
+            
+            # Check data completeness
+            completeness = (1 - df.isnull().sum().sum() / (rows * cols)) * 100
+            verification["stats"]["completeness_percent"] = round(completeness, 1)
+            
+            if completeness < 50:
+                verification["warnings"].append(f"Low data completeness: {completeness:.1f}%")
+            
+            # Pipeline-specific validation (if it's the pipeline dataset)
+            if any(col in df.columns for col in ['pipeline_name', 'scheduled_quantity', 'state_abb']):
+                self._verify_pipeline_dataset(df, verification)
+                
+            logger.info(f"Dataset verification completed: {verification['status']} - {rows:,} rows, {cols} columns, {completeness:.1f}% complete")
+            
+            return verification
+            
+        except Exception as e:
+            verification["status"] = "error"
+            verification["issues"].append(f"Verification failed: {str(e)}")
+            logger.error(f"Dataset verification error: {e}")
+            return verification
+
+    def _verify_pipeline_dataset(self, df: pd.DataFrame, verification: Dict[str, Any]):
+        """Pipeline-specific dataset validation."""
+        expected_cols = ['pipeline_name', 'scheduled_quantity', 'state_abb', 'eff_gas_day']
+        missing_cols = [col for col in expected_cols if col not in df.columns]
+        
+        if missing_cols:
+            verification["warnings"].append(f"Expected pipeline columns missing: {missing_cols}")
+        
+        # Check for reasonable data ranges
+        if 'scheduled_quantity' in df.columns:
+            max_quantity = df['scheduled_quantity'].max()
+            if pd.notna(max_quantity) and max_quantity > 1e9:  # Very large values might indicate data issues
+                verification["warnings"].append(f"Unusually large scheduled_quantity values (max: {max_quantity:,.0f})")
+        
+        # Check state abbreviations
+        if 'state_abb' in df.columns:
+            unique_states = df['state_abb'].nunique()
+            verification["stats"]["unique_states"] = unique_states
+            if unique_states > 60:  # More than expected US states + territories
+                verification["warnings"].append(f"Unexpectedly high number of unique states: {unique_states}")
 
 
 def get_default_loader() -> DataLoader:
